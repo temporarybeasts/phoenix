@@ -2362,6 +2362,117 @@ class User(HasId):
     )
 
 
+class IdpGroup(HasId):
+    """An IdP-synced group (e.g. one value of an OIDC ``groups`` claim),
+    usable as a grant subject in ``project_grants`` alongside individual
+    users."""
+
+    __tablename__ = "idp_groups"
+    name: Mapped[str] = mapped_column(unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(UtcTimeStamp, server_default=func.now())
+    memberships: Mapped[list["UserIdpGroupMembership"]] = relationship(
+        "UserIdpGroupMembership",
+        back_populates="idp_group",
+        cascade="all, delete-orphan",
+    )
+    project_grants: Mapped[list["ProjectGrant"]] = relationship(
+        "ProjectGrant",
+        back_populates="idp_group",
+        cascade="all, delete-orphan",
+    )
+
+
+class UserIdpGroupMembership(Base):
+    """Current membership of a user in an IdP-synced group. Synced with
+    replace semantics on every OIDC login (a user's row set here is deleted
+    and reinserted from their current claims each time), mirroring the
+    existing role-resync behavior: removal from a group takes effect on the
+    user's next login, not instantly."""
+
+    __tablename__ = "user_idp_group_memberships"
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    idp_group_id: Mapped[int] = mapped_column(
+        ForeignKey("idp_groups.id", ondelete="CASCADE"),
+        # index on the second element of the composite primary key
+        index=True,
+    )
+    user: Mapped["User"] = relationship("User")
+    idp_group: Mapped["IdpGroup"] = relationship("IdpGroup", back_populates="memberships")
+
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "user_id",
+            "idp_group_id",
+        ),
+    )
+
+
+class ProjectGrant(HasId):
+    """Grants project-scoped access to either a user or an IdP group.
+    Exactly one of ``user_id``/``idp_group_id`` is set per row. ``source``
+    distinguishes grants reconciled from the declarative group->project
+    mapping config (see PHOENIX_ACCESS_CONTROL_GROUP_MAPPING_FILE) from any
+    future manually/admin-UI-created grant, so the config sync only ever
+    touches rows it created."""
+
+    __tablename__ = "project_grants"
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    idp_group_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("idp_groups.id", ondelete="CASCADE"), nullable=True
+    )
+    permission: Mapped[str] = mapped_column(nullable=False)
+    source: Mapped[str] = mapped_column(
+        CheckConstraint("source IN ('config', 'manual')", name="valid_project_grant_source")
+    )
+    granted_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UtcTimeStamp, server_default=func.now())
+
+    project: Mapped["Project"] = relationship("Project")
+    user: Mapped[Optional["User"]] = relationship("User", foreign_keys=[user_id])
+    idp_group: Mapped[Optional["IdpGroup"]] = relationship(
+        "IdpGroup", back_populates="project_grants"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "(user_id IS NOT NULL) != (idp_group_id IS NOT NULL)",
+            name="exactly_one_grant_subject",
+        ),
+        # Two partial unique indexes rather than one combined UniqueConstraint:
+        # Postgres/SQLite both treat NULL as distinct-from-NULL in a UNIQUE
+        # constraint, so a single UniqueConstraint("project_id", "user_id",
+        # "idp_group_id", "permission") would silently allow duplicate user
+        # grants (idp_group_id always NULL for those rows). Mirrors the same
+        # partial-unique-index idiom already used above for
+        # oauth2_client_id/oauth2_user_id and ldap_unique_id.
+        Index(
+            "uq_project_grants_user",
+            "project_id",
+            "user_id",
+            "permission",
+            unique=True,
+            postgresql_where=text("user_id IS NOT NULL"),
+            sqlite_where=text("user_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_project_grants_idp_group",
+            "project_id",
+            "idp_group_id",
+            "permission",
+            unique=True,
+            postgresql_where=text("idp_group_id IS NOT NULL"),
+            sqlite_where=text("idp_group_id IS NOT NULL"),
+        ),
+    )
+
+
 class SystemSetting(Base):
     """Server-wide key/value settings (JSON object per key)."""
 

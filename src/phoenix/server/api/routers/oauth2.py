@@ -7,7 +7,7 @@ from datetime import timedelta
 from os import getenv
 from random import randrange
 from typing import Any, Optional, TypedDict
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import unquote, urlparse
 
 import jmespath
 from authlib.common.security import generate_token
@@ -49,11 +49,10 @@ from phoenix.config import (
     get_env_disable_rate_limit,
 )
 from phoenix.db import models
-from phoenix.server.access.active_group import (
-    apply_login_active_project_group_cookie,
-    requires_group_selection,
+from phoenix.server.access.idp_sync import (
+    sync_config_driven_project_grants,
+    sync_idp_group_memberships,
 )
-from phoenix.server.access.idp_sync import sync_idp_groups
 from phoenix.server.api.auth_messages import AuthErrorCode
 from phoenix.server.bearer_auth import create_access_and_refresh_tokens
 from phoenix.server.oauth2 import DEFAULT_EMAIL_PATH, OAuth2Client, search_claim_path
@@ -264,11 +263,14 @@ async def create_tokens(
                 role_resync=oauth2_client.role_resync,
             )
             # Fork-only: sync the IdP groups already extracted above (as
-            # `role_name`'s source data) onto the user -- project access is
-            # computed live from this list at resolution time. Same
-            # replace-on-login semantics as the role resync just above --
-            # see phoenix.server.access.idp_sync.
-            await sync_idp_groups(session, user.id, oauth2_client.extract_groups(user_info.claims))
+            # `role_name`'s source data) into the access-control tables,
+            # and reconcile any config-driven project grants they imply.
+            # Same replace-on-login semantics as the role resync just
+            # above -- see phoenix.server.access.idp_sync.
+            idp_group_ids_by_name = await sync_idp_group_memberships(
+                session, user.id, oauth2_client.extract_groups(user_info.claims)
+            )
+            await sync_config_driven_project_grants(session, idp_group_ids_by_name)
     except EmailAlreadyInUse as e:
         logger.error("Email already in use for IDP %s: %s", idp_name, e)
         return _redirect_to_login(request=request, error="email_in_use")
@@ -281,33 +283,17 @@ async def create_tokens(
         access_token_expiry=access_token_expiry,
         refresh_token_expiry=refresh_token_expiry,
     )
-    async with request.app.state.db() as session:
-        # Multi-group users must explicitly pick which group they're
-        # viewing before entering the app -- send them to the picker
-        # instead of their original destination; it re-applies `return_url`
-        # once a selection is made. Single-group users are auto-selected
-        # (no interstitial needed); zero-group users get neither -- they
-        # land in the app itself and see an empty "no project access" state.
-        if await requires_group_selection(session, user.id):
-            redirect_path = prepend_root_path(
-                request.scope,
-                "/login/choose-group" + ("?returnUrl=" + quote(return_url) if return_url else ""),
-            )
-        else:
-            redirect_path = prepend_root_path(request.scope, return_url or "/")
-        response = RedirectResponse(
-            url=redirect_path,
-            status_code=302,
-        )
-        response = set_access_token_cookie(
-            response=response, access_token=access_token, max_age=access_token_expiry
-        )
-        response = set_refresh_token_cookie(
-            response=response, refresh_token=refresh_token, max_age=refresh_token_expiry
-        )
-        response = await apply_login_active_project_group_cookie(
-            session=session, response=response, user_id=user.id
-        )
+    redirect_path = prepend_root_path(request.scope, return_url or "/")
+    response = RedirectResponse(
+        url=redirect_path,
+        status_code=302,
+    )
+    response = set_access_token_cookie(
+        response=response, access_token=access_token, max_age=access_token_expiry
+    )
+    response = set_refresh_token_cookie(
+        response=response, refresh_token=refresh_token, max_age=refresh_token_expiry
+    )
     response = delete_oauth2_state_cookie(response)
     response = delete_oauth2_nonce_cookie(response)
     response = delete_oauth2_code_verifier_cookie(response)
