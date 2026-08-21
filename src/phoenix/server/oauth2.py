@@ -463,6 +463,14 @@ class OAuth2Client(AsyncOAuth2Mixin, AsyncOpenIDMixin, BaseApp):  # type:ignore[
         result = search_claim_path(self._compiled_groups_path, claims, "GROUPS_ATTRIBUTE_PATH")
         return self._normalize_to_string_list(result)
 
+    def extract_groups(self, claims: dict[str, Any]) -> list[str]:
+        """Public wrapper around `_extract_groups_from_claims`, for the
+        fork's IdP-group -> project-grant sync (see
+        `phoenix.server.access.idp_sync`), which needs the raw group list
+        this class already extracts internally before collapsing it into a
+        single mapped role."""
+        return self._extract_groups_from_claims(claims)
+
     @staticmethod
     def _normalize_to_string_list(value: Any) -> list[str]:
         """
