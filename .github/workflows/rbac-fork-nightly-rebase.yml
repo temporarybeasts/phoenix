@@ -63,16 +63,23 @@ jobs:
 
       - name: Install uv
         if: steps.rebase.outputs.conflict == 'false'
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          # Must match [tool.uv].required-version in pyproject.toml, or uv
+          # refuses to run at all (this is what broke the first run: `@v3`
+          # + `version: latest` installed 0.12.5 against a repo pinned to
+          # 0.12.1). Mirrors python-CI.yml's own setup-uv step.
+          version: "0.12.1"
 
       - name: Post-rebase smoke check
         if: steps.rebase.outputs.conflict == 'false'
         run: |
           # Stage 3 placeholder: no fork-specific code exists yet, so this
           # is just Phoenix's own fast unit suite as an "it still
-          # imports/boots" check. Stage 4 replaces/extends this with the
+          # imports/boots" check, mirroring python-CI.yml's sqlite
+          # unit_tests job. Stage 4 replaces/extends this with the
           # coverage-invariant per-project permission test.
-          uv run tox run -q -e unit_tests -- -n auto
+          uvx tox run -e unit_tests -- -ra --reruns 5 -n 16 --dist loadscope
 
       - name: Open or update regression issue
         if: failure() && steps.rebase.outputs.conflict == 'false'
