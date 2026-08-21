@@ -90,6 +90,10 @@ from phoenix.db.bulk_inserter import BulkInserter
 from phoenix.db.facilitator import Facilitator
 from phoenix.db.helpers import SupportedSQLDialect
 from phoenix.db.insertion.types import AnnotationPrecursor
+from phoenix.server.access.schema_provisioning import (
+    new_project_ids_var,
+    provision_project_schema,
+)
 from phoenix.server.agents.capabilities import MintlifyDocsMCPServer
 from phoenix.server.api.auth_messages import AUTH_ERROR_MESSAGES, AuthErrorCode
 from phoenix.server.api.context import Context, build_context
@@ -456,11 +460,32 @@ async def version() -> PlainTextResponse:
 
 def _db(engine: AsyncEngine) -> Callable[[], AbstractAsyncContextManager[AsyncSession]]:
     Session = async_sessionmaker(engine, expire_on_commit=False)
+    # Schema-per-project spike (provisional) -- Postgres-only.
+    is_postgresql = engine.dialect.name == "postgresql"
 
     @contextlib.asynccontextmanager
     async def factory() -> AsyncIterator[AsyncSession]:
-        async with Session.begin() as session:
-            yield session
+        # Schema-per-project spike: give this session's context a fresh
+        # accumulator so `_capture_new_project_ids` (an engine-level
+        # after_execute hook -- see schema_provisioning.py for why it's
+        # engine-level, not session-level) has somewhere to append ids for
+        # *this* session specifically, then read it back once the
+        # transaction's outcome is known.
+        token = new_project_ids_var.set([])
+        try:
+            async with Session.begin() as session:
+                yield session
+            # Only reached if the `async with` block above exited without
+            # raising, i.e. the commit actually succeeded -- a rollback
+            # means no Project row persisted, so there's nothing to
+            # provision.
+            if is_postgresql and (new_project_ids := new_project_ids_var.get()):
+                for project_id in new_project_ids:
+                    async with engine.connect() as connection:
+                        async with connection.begin():
+                            await provision_project_schema(connection, project_id)
+        finally:
+            new_project_ids_var.reset(token)
 
     return factory
 
