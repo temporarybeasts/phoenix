@@ -1,0 +1,122 @@
+name: RBAC fork nightly rebase
+
+# Stage 3 of the SSO/RBAC fork plan: keeps `rbac-fork` rebased onto
+# Arize-ai/phoenix's `main` so drift is caught in a ~1-day window instead
+# of accumulating (the upstream access-control-prototype branch this fork
+# initially considered porting drifted 688 commits before anyone looked).
+#
+# This file lives on `main` (the repo's default branch) because GitHub
+# only reads `on: schedule` triggers from the default branch -- but the
+# actual work happens on `rbac-fork`, which the checkout step below pins
+# via `ref:`. It intentionally never gets upstreamed; `main` otherwise
+# stays a byte-for-byte mirror of upstream/main.
+
+on:
+  schedule:
+    - cron: "0 10 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  UPSTREAM_REPO: https://github.com/Arize-ai/phoenix.git
+  PATCH_BRANCH: rbac-fork
+  CONFLICT_BRANCH: rbac-fork-conflict
+
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout rbac-fork
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PATCH_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.REBASE_BOT_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "rbac-fork-bot"
+          git config user.email "rbac-fork-bot@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM_REPO"
+          git fetch upstream main
+
+      - name: Attempt rebase onto upstream/main
+        id: rebase
+        run: |
+          if git rebase upstream/main; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            git rebase --abort
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push rebased branch
+        if: steps.rebase.outputs.conflict == 'false'
+        run: git push --force-with-lease origin "$PATCH_BRANCH"
+
+      - name: Install uv
+        if: steps.rebase.outputs.conflict == 'false'
+        uses: astral-sh/setup-uv@v3
+
+      - name: Post-rebase smoke check
+        if: steps.rebase.outputs.conflict == 'false'
+        run: |
+          # Stage 3 placeholder: no fork-specific code exists yet, so this
+          # is just Phoenix's own fast unit suite as an "it still
+          # imports/boots" check. Stage 4 replaces/extends this with the
+          # coverage-invariant per-project permission test.
+          uv run tox run -q -e unit_tests -- -n auto
+
+      - name: Open or update regression issue
+        if: failure() && steps.rebase.outputs.conflict == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.REBASE_BOT_TOKEN }}
+        run: |
+          title="Nightly rebase regression on ${PATCH_BRANCH}"
+          body="The nightly rebase of \`${PATCH_BRANCH}\` onto \`upstream/main\` succeeded with **no conflicts**, but the post-rebase smoke check failed. This is a real regression, not a merge conflict -- \`${PATCH_BRANCH}\` was already force-pushed with the rebased (but failing) state.
+
+          Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          existing="$(gh issue list --search "in:title \"$title\"" --state open --json number --jq '.[0].number')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
+
+      - name: Push conflict branch for manual resolution
+        if: steps.rebase.outputs.conflict == 'true'
+        run: git push origin "HEAD:refs/heads/${CONFLICT_BRANCH}" --force
+
+      - name: Open or update conflict PR
+        if: steps.rebase.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.REBASE_BOT_TOKEN }}
+        run: |
+          title="Nightly rebase conflict: $(date -u +%F)"
+          body="Automated rebase of \`${PATCH_BRANCH}\` onto \`upstream/main\` hit a conflict on $(date -u +%F).
+
+          To resolve:
+          1. \`git fetch origin && git checkout ${CONFLICT_BRANCH}\`
+          2. \`git remote add upstream ${UPSTREAM_REPO} 2>/dev/null; git fetch upstream main\`
+          3. \`git rebase upstream/main\`, resolve conflicts, \`git rebase --continue\`
+          4. \`git push origin HEAD:${PATCH_BRANCH} --force-with-lease\`
+          5. Close this PR -- the next nightly run recreates \`${CONFLICT_BRANCH}\` if it's still needed."
+          existing="$(gh pr list --head "$CONFLICT_BRANCH" --base "$PATCH_BRANCH" --json number --jq '.[0].number')"
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --body "$body"
+          else
+            gh pr create --head "$CONFLICT_BRANCH" --base "$PATCH_BRANCH" --title "$title" --body "$body"
+          fi
+
+      - name: Fail run on conflict (visible in the Actions tab)
+        if: steps.rebase.outputs.conflict == 'true'
+        run: |
+          echo "::error::Rebase conflict -- see the opened/updated PR for resolution steps."
+          exit 1
