@@ -73,13 +73,16 @@ jobs:
 
       - name: Post-rebase smoke check
         if: steps.rebase.outputs.conflict == 'false'
+        timeout-minutes: 15
         run: |
           # Stage 3 placeholder: no fork-specific code exists yet, so this
           # is just Phoenix's own fast unit suite as an "it still
-          # imports/boots" check, mirroring python-CI.yml's sqlite
-          # unit_tests job. Stage 4 replaces/extends this with the
-          # coverage-invariant per-project permission test.
-          uvx tox run -e unit_tests -- -ra --reruns 5 -n 16 --dist loadscope
+          # imports/boots" check. `-n 16 --dist loadscope --reruns 5`
+          # (python-CI.yml's own setting) is tuned for that job's runner
+          # sizing and OOM-killed (SIGTERM/143) on this workflow's default
+          # `ubuntu-latest` (2 cores) -- `-n auto` sizes to whatever's
+          # actually available instead of hardcoding 16 workers.
+          uvx tox run -e unit_tests -- -ra -n auto
 
       - name: Open or update regression issue
         if: failure() && steps.rebase.outputs.conflict == 'false'
