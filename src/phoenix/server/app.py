@@ -38,7 +38,7 @@ from grpc.aio import ServerInterceptor
 from grpc_interceptor import AsyncServerInterceptor
 from pydantic import SecretStr
 from pydantic_ai.mcp import MCPToolset
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from starlette.authentication import UnauthenticatedUser
 from starlette.datastructures import URL
@@ -90,6 +90,8 @@ from phoenix.db.bulk_inserter import BulkInserter
 from phoenix.db.facilitator import Facilitator
 from phoenix.db.helpers import SupportedSQLDialect
 from phoenix.db.insertion.types import AnnotationPrecursor
+from phoenix.server.access.context import CurrentUserMiddleware, current_user_var
+from phoenix.server.access.resolution import get_readable_project_ids
 from phoenix.server.agents.capabilities import MintlifyDocsMCPServer
 from phoenix.server.api.auth_messages import AUTH_ERROR_MESSAGES, AuthErrorCode
 from phoenix.server.api.context import Context, build_context
@@ -117,7 +119,12 @@ from phoenix.server.api.routers.oauth2_authorization_server import (
 from phoenix.server.api.routers.v1 import REST_API_VERSION
 from phoenix.server.api.schema import build_graphql_schema
 from phoenix.server.authorization import insufficient_storage_message
-from phoenix.server.bearer_auth import BearerTokenAuthBackend, PhoenixUser, is_authenticated
+from phoenix.server.bearer_auth import (
+    BearerTokenAuthBackend,
+    PhoenixSystemUser,
+    PhoenixUser,
+    is_authenticated,
+)
 from phoenix.server.daemons.agent_session_sweeper import AgentSessionSweeper
 from phoenix.server.daemons.db_disk_usage_monitor import DbDiskUsageMonitor
 from phoenix.server.daemons.experiment_runner import ExperimentRunner
@@ -454,15 +461,64 @@ async def version() -> PlainTextResponse:
     return PlainTextResponse(f"{phoenix_version}")
 
 
+# DB-isolation spike (provisional -- see the SSO/RBAC fork plan's
+# "DB-isolation spike (B + A)" section). Must match the role name created
+# in migration 6960ef3a49b4_db_isolation_spike_rls.py -- migrations
+# intentionally don't import application code, so this is a duplicated
+# literal, not a shared constant.
+_DB_ISOLATION_SCOPED_ROLE = "phoenix_scoped"
+
+
 def _db(engine: AsyncEngine) -> Callable[[], AbstractAsyncContextManager[AsyncSession]]:
     Session = async_sessionmaker(engine, expire_on_commit=False)
+    # RLS/role-switching is Postgres-only -- SQLite has no such concept,
+    # and this whole mechanism doesn't apply to the local dev/sqlite path.
+    is_postgresql = engine.dialect.name == "postgresql"
 
     @contextlib.asynccontextmanager
     async def factory() -> AsyncIterator[AsyncSession]:
         async with Session.begin() as session:
+            if is_postgresql:
+                await _set_db_isolation_guards(session)
             yield session
 
     return factory
+
+
+async def _set_db_isolation_guards(session: AsyncSession) -> None:
+    """DB-isolation spike: sets the RLS GUCs (and switches role for regular
+    users) at the start of every transaction, based on the current
+    request's authenticated user -- ambient via `current_user_var`, since
+    `DbSessionFactory` itself has no per-request argument slot (see
+    `phoenix.server.access.context` for why). Uses `set_config(..., true)`
+    rather than string-interpolated `SET LOCAL name = value`, since `SET`
+    doesn't support bind parameters the normal way -- `set_config` is a
+    regular function call and does. Both are transaction-scoped (the
+    `true` "is_local" argument), so this can never leak across the
+    connection pool's reuse of a physical connection between unrelated
+    requests, regardless of whether this transaction commits or rolls
+    back.
+    """
+    user = current_user_var.get(None)
+    if user is None or isinstance(user, PhoenixSystemUser) or user.is_admin:
+        # No user in context (background/daemon work, e.g. the experiment
+        # runner or retention sweeps) or admin/system -- full access, same
+        # as today's behavior for those cases. Explicit, not merely
+        # "unset": the RLS policies are fail-closed, so leaving this
+        # branch as a no-op would incorrectly block trusted internal work.
+        await session.execute(text("SELECT set_config('app.bypass_rls', 'true', true)"))
+        return
+    readable_project_ids = await get_readable_project_ids(session, user)
+    assert readable_project_ids is not None  # admin/system already handled above
+    ids_csv = ",".join(str(i) for i in sorted(readable_project_ids))
+    await session.execute(
+        text("SELECT set_config('app.readable_project_ids', :ids, true)"), {"ids": ids_csv}
+    )
+    # SET ROLE's argument is an identifier, not a value -- it can't go
+    # through set_config/bind params. Safe to interpolate here only
+    # because it's a fixed internal constant, never derived from request
+    # input.
+    await session.execute(text(f"SET LOCAL ROLE {_DB_ISOLATION_SCOPED_ROLE}"))
 
 
 @dataclass(frozen=True)
@@ -1002,6 +1058,15 @@ def create_app(
         )
     else:
         token_store = None
+    # DB-isolation spike (provisional): must be appended *after*
+    # AuthenticationMiddleware -- Starlette applies middleware in list
+    # order (first in the list is outermost / sees the request first), so
+    # this needs to run later in the request path for scope["user"] to
+    # already be populated. Unconditional (not inside the `if
+    # authentication_enabled` branch above): harmless when auth is
+    # disabled, since scope won't have a "user" key either way and
+    # CurrentUserMiddleware treats that the same as no-context.
+    middlewares.append(Middleware(CurrentUserMiddleware))
     dml_event_handler = DmlEventHandler(
         db=db,
         cache_for_dataloaders=cache_for_dataloaders,
