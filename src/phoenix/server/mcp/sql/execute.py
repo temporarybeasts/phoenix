@@ -380,7 +380,11 @@ def _phoenix_table_names() -> frozenset[str]:
     """
     from phoenix.db import models
 
-    return frozenset(models.Base.metadata.tables)
+    # `.name` (bare), not the `.tables` dict key: Trace/Span/etc. now carry
+    # an explicit schema token (Stage 4b-2a) that qualifies their key
+    # (`f"{token}.traces"`), but callers here compare against the bare
+    # table names SQLite's authorizer reports.
+    return frozenset(table.name for table in models.Base.metadata.tables.values())
 
 
 def _sqlite_authorizer(

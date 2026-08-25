@@ -12,6 +12,7 @@ from freezegun import freeze_time
 from pydantic import ValidationError
 
 from phoenix.db import models
+from phoenix.db.models import PROJECT_SCOPED_SCHEMA_TOKEN
 from phoenix.db.types.trace_retention import (
     MaxCountRule,
     MaxDaysOrCountRule,
@@ -44,7 +45,11 @@ class TestMaxDaysMixin:
         "max_days,expected",
         [
             pytest.param(0, "false", id="zero_days"),
-            pytest.param(0.5, "traces.start_time < '2023-01-15 00:00:00+00:00'", id="half_days"),
+            pytest.param(
+                0.5,
+                f"{PROJECT_SCOPED_SCHEMA_TOKEN}.traces.start_time < '2023-01-15 00:00:00+00:00'",
+                id="half_days",
+            ),
         ],
     )
     def test_filter(self, max_days: int, expected: str) -> None:

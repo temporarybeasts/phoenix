@@ -26,6 +26,7 @@ from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, create_async_engine
 from starlette.types import ASGIApp
 
+from phoenix.config import get_env_database_schema
 from phoenix.db import models
 from phoenix.db.bulk_inserter import BulkInserter
 from phoenix.db.engines import (
@@ -143,7 +144,9 @@ def _postgresql_template_db(postgresql_proc: Any) -> Iterator[str]:
         port=postgresql_proc.port,
         database=template_name,
     )
-    sync_engine = sqlalchemy.create_engine(sync_url)
+    sync_engine = sqlalchemy.create_engine(sync_url).execution_options(
+        schema_translate_map={models.PROJECT_SCOPED_SCHEMA_TOKEN: get_env_database_schema()}
+    )
     models.Base.metadata.create_all(sync_engine)
     sync_engine.dispose()
     yield template_name
@@ -205,6 +208,8 @@ def _sqlite_schema_db() -> Iterator[str]:
     sync_engine = sqlalchemy.create_engine(
         "sqlite://",
         creator=lambda: sqlean.connect(uri, uri=True),
+    ).execution_options(
+        schema_translate_map={models.PROJECT_SCOPED_SCHEMA_TOKEN: get_env_database_schema()}
     )
     models.Base.metadata.create_all(sync_engine)
     yield db_name
@@ -253,6 +258,9 @@ async def sqlite_engine(
             json_serializer=_json_serializer,
         )
         sqlalchemy.event.listen(engine.sync_engine, "connect", set_sqlite_pragma)
+        engine = engine.execution_options(
+            schema_translate_map={models.PROJECT_SCOPED_SCHEMA_TOKEN: get_env_database_schema()}
+        )
         yield engine
         await engine.dispose()
 

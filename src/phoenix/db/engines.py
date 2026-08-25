@@ -17,9 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import AsyncAdaptedQueuePool
 from typing_extensions import assert_never
 
+from phoenix.config import get_env_database_schema
 from phoenix.db.helpers import SupportedSQLDialect
 from phoenix.db.migrate import migrate_in_thread
-from phoenix.db.models import init_models
+from phoenix.db.models import PROJECT_SCOPED_SCHEMA_TOKEN, init_models
 from phoenix.db.pg_config import get_pg_config
 
 SQLEAN_EXTENSIONS = ("text", "stats", "crypto")
@@ -247,7 +248,27 @@ def aio_sqlite_read_engine(url: URL, log_to_stdout: bool = False) -> Optional[As
     event.listen(engine.sync_engine, "connect", set_sqlite_read_pragma)
     event.listen(engine.sync_engine, "connect", _disable_implicit_transactions)
     event.listen(engine.sync_engine, "begin", _begin_read_transaction)
-    return engine
+    return _apply_project_scoped_schema_translation(engine)
+
+
+def _apply_project_scoped_schema_translation(engine: AsyncEngine) -> AsyncEngine:
+    """Every engine gets this by default (Stage 4b-2a of the SSO/RBAC fork
+    plan): `Trace`/`Span`/etc. now resolve to `PROJECT_SCOPED_SCHEMA_TOKEN`
+    at the model level (see `db/models.py`), a schema that never physically
+    exists -- only `schema_translate_map` makes it resolve to something
+    real. Mapping it here to `get_env_database_schema()`'s value (`None`
+    for SQLite, and for Postgres when no schema is configured) keeps every
+    *unscoped* query hitting exactly where it hits today; only connections
+    explicitly opened via `schema_scoped_connection`
+    (`server/access/schema_provisioning.py`) remap the token to a specific
+    project's schema instead. `execution_options()` returns a new `AsyncEngine`
+    sharing the same pool, not a new connection -- cheap, and every caller of
+    `create_engine()`/`aio_sqlite_read_engine()` already treats the return
+    value as *the* engine to use.
+    """
+    return engine.execution_options(
+        schema_translate_map={PROJECT_SCOPED_SCHEMA_TOKEN: get_env_database_schema()}
+    )
 
 
 def create_engine(
@@ -265,6 +286,9 @@ def create_engine(
     backend = SupportedSQLDialect(url.get_backend_name())
     url = get_async_db_url(url.render_as_string(hide_password=False))
     if backend is SupportedSQLDialect.SQLITE:
+        # Both branches already apply the default project-scoped schema
+        # translation themselves (Stage 4b-2a) -- so this stays a plain
+        # dialect dispatch, not a place that needs to know about it too.
         return aio_sqlite_engine(
             url=url,
             migrate=migrate,
@@ -320,6 +344,13 @@ def aio_sqlite_engine(
         pool_timeout=None,
     )
     event.listen(engine.sync_engine, "connect", set_sqlite_pragma)
+    # Wrap before any DDL/DML runs against it below: schema_translate_map
+    # applies to CREATE TABLE (`_init_memory_models`'s `create_all`) the
+    # same way it applies to SELECT/INSERT, so `_init_memory_models` needs
+    # the token already resolving to `None` here, not just on the returned
+    # engine (verified directly -- schema_translate_map is a compile-time
+    # substitution generic to any compiled ClauseElement, DDL included).
+    engine = _apply_project_scoped_schema_translation(engine)
     if not migrate:
         return engine
     if database.startswith(":memory:"):
@@ -334,6 +365,10 @@ def aio_sqlite_engine(
             echo=log_migrations,
         )
         event.listen(migration_engine.sync_engine, "connect", set_sqlite_migration_pragma)
+        # Not wrapped: Alembic migrations hardcode their own DDL
+        # (`op.create_table(...)`, no `schema=`) rather than reading
+        # `Base.metadata` at apply time, so they're unaffected by the
+        # token either way -- tables land in the real shared schema.
         migrate_in_thread(migration_engine, log_migrations=log_migrations)
     return engine
 
@@ -447,7 +482,7 @@ def aio_postgresql_engine(
         )
 
     if not migrate:
-        return engine
+        return _apply_project_scoped_schema_translation(engine)
 
     # Migration engines use NullPool: every checkout opens a fresh
     # connection and disposes it on return, so pool_pre_ping and
@@ -484,8 +519,12 @@ def aio_postgresql_engine(
             json_serializer=_dumps,
             poolclass=NullPool,
         )
+    # Not wrapped: Alembic migrations hardcode their own DDL
+    # (`op.create_table(...)`, no `schema=`) rather than reading
+    # `Base.metadata` at apply time, so they're unaffected by the token
+    # either way -- tables land in the real shared schema.
     migrate_in_thread(migration_engine, log_migrations=log_migrations)
-    return engine
+    return _apply_project_scoped_schema_translation(engine)
 
 
 def _dumps(obj: Any) -> str:

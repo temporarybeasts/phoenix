@@ -37,7 +37,7 @@ from collections.abc import AsyncIterator
 from contextvars import ContextVar
 from typing import Optional
 
-from sqlalchemy import Insert, MetaData, event, select, text
+from sqlalchemy import BLANK_SCHEMA, Insert, MetaData, event, select, text
 from sqlalchemy.engine import Connection, CursorResult, Engine
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -84,10 +84,19 @@ def _project_scoped_metadata(project_schema: str) -> MetaData:
 
     def _referred_schema_fn(
         table: object, to_schema: "str | None", constraint: object, referred_schema: "str | None"
-    ) -> "str | None":
+    ) -> object:
+        # Returning `None` here means "no override, keep the source's exact
+        # referred schema" to `tometadata()`, not "explicit no schema" -- so
+        # when `shared_schema` (a real Postgres schema, or `None` for the
+        # common default-schema case) is `None`, `return shared_schema`
+        # would silently no-op instead of clearing the schema, leaving the
+        # clone's FK still pointed at `to_schema`/whatever the source had.
+        # `BLANK_SCHEMA` is SQLAlchemy's sentinel for "explicitly no schema",
+        # distinct from `None`'s "unspecified" -- confirmed directly against
+        # this SQLAlchemy version, not just from docs.
         if constraint.referred_table.name in _PROJECT_SCOPED_TABLES:  # type: ignore[attr-defined]
             return to_schema
-        return shared_schema
+        return shared_schema if shared_schema is not None else BLANK_SCHEMA
 
     target = MetaData()
     models.Project.__table__.tometadata(target, schema=shared_schema)
@@ -147,6 +156,16 @@ async def provision_project_schema(connection: AsyncConnection, project_id: int)
             f'TO "{role_name}"'
         )
     )
+    # The `id` columns are Postgres SERIAL (an implicit sequence + a column
+    # DEFAULT nextval(...)), and a sequence's privileges are independent of
+    # its owning table's -- INSERT on the table alone isn't enough to call
+    # nextval() on the sequence backing its own primary key. Confirmed
+    # directly against real Postgres: this grant was missing before Stage
+    # 4b-2a's regression test exercised an actual scoped-role INSERT for
+    # the first time.
+    await connection.execute(
+        text(f'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA "{schema_name}" TO "{role_name}"')
+    )
     # Read-only grant on the shared catalog table so a single-project query
     # can still join in the project's own name/metadata (FK enforcement
     # itself doesn't require this -- Postgres checks FK constraints with
@@ -163,13 +182,22 @@ async def schema_scoped_connection(
     project's schema (via `schema_translate_map`) with that project's role
     switched in. Demo/mechanism-proof helper for this spike -- not wired
     into the real GraphQL/REST query surface or the dataloader layer.
+
+    Keys the translate map on `models.PROJECT_SCOPED_SCHEMA_TOKEN`, not on
+    `get_env_database_schema()`'s value directly (Stage 4b-2a) -- every
+    table in the app shares that same default schema, so mapping it
+    directly would redirect *all* of them into the project's schema, not
+    just the ones actually cloned there (e.g. a query joining a
+    project-scoped table to `projects` would wrongly try to resolve
+    `projects` inside `project_<id>`, where it doesn't exist). The token
+    is a schema value only the project-scoped tables use, so the map only
+    ever matches those.
     """
     schema_name = _project_schema_name(project_id)
     role_name = _project_role_name(project_id)
-    shared_schema = get_env_database_schema()
     async with engine.connect() as connection:
         connection = await connection.execution_options(
-            schema_translate_map={shared_schema: schema_name}
+            schema_translate_map={models.PROJECT_SCOPED_SCHEMA_TOKEN: schema_name}
         )
         async with connection.begin():
             await connection.execute(text(f'SET LOCAL ROLE "{role_name}"'))

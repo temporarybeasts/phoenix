@@ -700,6 +700,24 @@ class ExperimentRunOutput(TypedDict, total=False):
     task_output: Any
 
 
+#: Symbolic schema token for the tables that move into a per-project
+#: Postgres schema under schema-per-project (Stage 4b-2 of the SSO/RBAC fork
+#: plan). Deliberately distinct from `get_env_database_schema()`'s value
+#: (which every other table resolves through via `Base.metadata`'s default)
+#: so that `schema_translate_map`-based routing -- both the default mapping
+#: applied to every engine in `db/engines.py` and the per-project mapping in
+#: `server/access/schema_provisioning.py`'s `schema_scoped_connection` --
+#: can retarget exactly these tables without also catching `projects`,
+#: `users`, or anything else that happens to share the same default schema.
+#: An earlier version of `schema_scoped_connection` keyed its translate map
+#: directly on `get_env_database_schema()`'s value, which matched *every*
+#: table in the app, not just the ones meant to move -- confirmed by reading
+#: the code, not just observed: a query joining a project-scoped table to
+#: `projects` in one statement would have tried to resolve `projects` inside
+#: the project's schema, where it was never cloned.
+PROJECT_SCOPED_SCHEMA_TOKEN = "__phoenix_project_scoped__"
+
+
 class Base(DeclarativeBase):
     # Enforce best practices for naming constraints
     # https://alembic.sqlalchemy.org/en/latest/naming.html#integration-of-naming-conventions-into-operations-autogenerate
@@ -802,6 +820,7 @@ class ProjectSession(HasId):
             "project_id",
             text("end_time DESC"),
         ),
+        {"schema": PROJECT_SCOPED_SCHEMA_TOKEN},
     )
 
 
@@ -813,7 +832,7 @@ class Trace(HasId):
     )
     trace_id: Mapped[str]
     project_session_rowid: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("project_sessions.id", ondelete="CASCADE"),
+        ForeignKey(f"{PROJECT_SCOPED_SCHEMA_TOKEN}.project_sessions.id", ondelete="CASCADE"),
         index=True,
     )
     start_time: Mapped[datetime] = mapped_column(UtcTimeStamp)
@@ -861,13 +880,14 @@ class Trace(HasId):
             "project_rowid",
             text("start_time DESC"),
         ),
+        {"schema": PROJECT_SCOPED_SCHEMA_TOKEN},
     )
 
 
 class Span(HasId):
     __tablename__ = "spans"
     trace_rowid: Mapped[int] = mapped_column(
-        ForeignKey("traces.id", ondelete="CASCADE"),
+        ForeignKey(f"{PROJECT_SCOPED_SCHEMA_TOKEN}.traces.id", ondelete="CASCADE"),
         index=True,
     )
     span_id: Mapped[str]
@@ -1048,6 +1068,7 @@ class Span(HasId):
             postgresql_where=column("attributes", JSON_)[["user", "id"]].as_string().is_not(None),
             sqlite_where=column("attributes", JSON_)[["user", "id"]].as_string().is_not(None),
         ),
+        {"schema": PROJECT_SCOPED_SCHEMA_TOKEN},
     )
 
 
@@ -1283,7 +1304,7 @@ async def init_models(engine: AsyncEngine) -> None:
 class SpanAnnotation(HasId):
     __tablename__ = "span_annotations"
     span_rowid: Mapped[int] = mapped_column(
-        ForeignKey("spans.id", ondelete="CASCADE"),
+        ForeignKey(f"{PROJECT_SCOPED_SCHEMA_TOKEN}.spans.id", ondelete="CASCADE"),
         index=True,
     )
     name: Mapped[str]
@@ -1319,13 +1340,14 @@ class SpanAnnotation(HasId):
             "span_rowid",
             "identifier",
         ),
+        {"schema": PROJECT_SCOPED_SCHEMA_TOKEN},
     )
 
 
 class TraceAnnotation(HasId):
     __tablename__ = "trace_annotations"
     trace_rowid: Mapped[int] = mapped_column(
-        ForeignKey("traces.id", ondelete="CASCADE"),
+        ForeignKey(f"{PROJECT_SCOPED_SCHEMA_TOKEN}.traces.id", ondelete="CASCADE"),
         index=True,
     )
     name: Mapped[str]
@@ -1358,13 +1380,14 @@ class TraceAnnotation(HasId):
             "trace_rowid",
             "identifier",
         ),
+        {"schema": PROJECT_SCOPED_SCHEMA_TOKEN},
     )
 
 
 class DocumentAnnotation(HasId):
     __tablename__ = "document_annotations"
     span_rowid: Mapped[int] = mapped_column(
-        ForeignKey("spans.id", ondelete="CASCADE"),
+        ForeignKey(f"{PROJECT_SCOPED_SCHEMA_TOKEN}.spans.id", ondelete="CASCADE"),
         index=True,
     )
     document_position: Mapped[int]
@@ -1402,13 +1425,14 @@ class DocumentAnnotation(HasId):
             "identifier",
             name="uq_document_annotations_name_span_rowid_document_pos_identifier",
         ),
+        {"schema": PROJECT_SCOPED_SCHEMA_TOKEN},
     )
 
 
 class ProjectSessionAnnotation(HasId):
     __tablename__ = "project_session_annotations"
     project_session_id: Mapped[int] = mapped_column(
-        ForeignKey("project_sessions.id", ondelete="CASCADE"),
+        ForeignKey(f"{PROJECT_SCOPED_SCHEMA_TOKEN}.project_sessions.id", ondelete="CASCADE"),
         index=True,
     )
     name: Mapped[str]
@@ -1441,6 +1465,7 @@ class ProjectSessionAnnotation(HasId):
             "project_session_id",
             "identifier",
         ),
+        {"schema": PROJECT_SCOPED_SCHEMA_TOKEN},
     )
 
 
@@ -1576,7 +1601,7 @@ class DatasetExample(HasId):
         ForeignKey("datasets.id", ondelete="CASCADE"),
     )
     span_rowid: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("spans.id", ondelete="SET NULL"),
+        ForeignKey(f"{PROJECT_SCOPED_SCHEMA_TOKEN}.spans.id", ondelete="SET NULL"),
         index=True,
         nullable=True,
     )
@@ -2974,12 +2999,12 @@ class SpanCost(HasId):
     __tablename__ = "span_costs"
 
     span_rowid: Mapped[int] = mapped_column(
-        ForeignKey("spans.id", ondelete="CASCADE"),
+        ForeignKey(f"{PROJECT_SCOPED_SCHEMA_TOKEN}.spans.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     trace_rowid: Mapped[int] = mapped_column(
-        ForeignKey("traces.id", ondelete="CASCADE"),
+        ForeignKey(f"{PROJECT_SCOPED_SCHEMA_TOKEN}.traces.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -3066,6 +3091,7 @@ class SpanCost(HasId):
             "model_id",
             "span_start_time",
         ),
+        {"schema": PROJECT_SCOPED_SCHEMA_TOKEN},
     )
 
     def append_detail(self, detail: "SpanCostDetail") -> None:
@@ -3087,7 +3113,7 @@ class SpanCost(HasId):
 class SpanCostDetail(HasId):
     __tablename__ = "span_cost_details"
     span_cost_id: Mapped[int] = mapped_column(
-        ForeignKey("span_costs.id", ondelete="CASCADE"),
+        ForeignKey(f"{PROJECT_SCOPED_SCHEMA_TOKEN}.span_costs.id", ondelete="CASCADE"),
         nullable=False,
     )
     token_type: Mapped[str] = mapped_column(index=True)
@@ -3105,6 +3131,7 @@ class SpanCostDetail(HasId):
             "token_type",
             "is_prompt",
         ),
+        {"schema": PROJECT_SCOPED_SCHEMA_TOKEN},
     )
 
 

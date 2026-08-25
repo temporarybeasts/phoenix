@@ -1834,6 +1834,11 @@ class TestJSONBReflection:
     def test_json_columns_compile_to_jsonb_on_both_backends(
         self, dialect: Any, expected: str
     ) -> None:
+        # Keyed by bare name, not dict key: some tables (Trace/Span/etc.,
+        # Stage 4b-2a) carry an explicit schema token that qualifies their
+        # `.tables` dict key (`f"{token}.spans"`), independent of any
+        # `PHOENIX_SQL_DATABASE_SCHEMA` configured for this test process.
+        tables_by_name = {table.name: table for table in models.Base.metadata.tables.values()}
         for table_name, column_name in [
             ("datasets", "metadata"),
             ("dataset_versions", "metadata"),
@@ -1842,6 +1847,6 @@ class TestJSONBReflection:
             ("spans", "attributes"),
             ("experiment_runs", "output"),
         ]:
-            column = models.Base.metadata.tables[table_name].columns[column_name]
+            column = tables_by_name[table_name].columns[column_name]
             actual = column.type.compile(dialect)
             assert actual == expected, f"{table_name}.{column_name} -> {actual}"

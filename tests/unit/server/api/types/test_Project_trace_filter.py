@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
@@ -95,11 +96,19 @@ async def test_project_spans_trace_filter_condition_composes_with_span_filter(
     assert response.data["node"]["spans"]["edges"] == [
         {"node": {"id": str(GlobalID("Span", f"{matching_span.project_rowid}:{matching_span.id}"))}}
     ]
-    listing_sql = next(
-        " ".join(statement.lower().split())
+    # Trace/Span now carry an explicit schema token (Stage 4b-2a) that a
+    # connection's schema_translate_map resolves per-dialect -- SQLite
+    # resolves it to its canonical default-schema name ("main"), not a bare
+    # unqualified reference, so strip any `<word>.` qualifier immediately
+    # before these two table names rather than matching them bare.
+    normalized_statements = [
+        re.sub(r"\b\w+\.(spans|traces)\b", r"\1", " ".join(statement.lower().split()))
         for statement in statements
-        if "from spans join traces" in " ".join(statement.lower().split())
-        and "spans.name" in statement.lower()
+    ]
+    listing_sql = next(
+        statement
+        for statement in normalized_statements
+        if "from spans join traces" in statement and "spans.name" in statement
     )
     assert "not (exists (select" in listing_sql
     assert "not in (select" not in listing_sql
