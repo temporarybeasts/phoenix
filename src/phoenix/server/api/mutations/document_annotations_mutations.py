@@ -20,7 +20,10 @@ from phoenix.server.api.input_types.PatchAnnotationInput import PatchAnnotationI
 from phoenix.server.api.queries import Query
 from phoenix.server.api.types.AnnotationSource import AnnotationSource
 from phoenix.server.api.types.DocumentAnnotation import DocumentAnnotation
-from phoenix.server.api.types.node import from_global_id_with_expected_type
+from phoenix.server.api.types.node import (
+    from_global_id_with_expected_type,
+    parse_project_scoped_node_id,
+)
 from phoenix.server.bearer_auth import PhoenixUser
 from phoenix.server.dml_event import DocumentAnnotationDeleteEvent, DocumentAnnotationInsertEvent
 
@@ -51,7 +54,12 @@ class DocumentAnnotationMutationMixin:
         span_rowids: set[int] = set()
         for idx, annotation_input in enumerate(input):
             try:
-                span_rowid = from_global_id_with_expected_type(annotation_input.span_id, "Span")
+                if annotation_input.span_id.type_name != "Span":
+                    raise ValueError("not a Span global id")
+                # Span's node id is compound "<project_id>:<row_id>" (Stage
+                # 4b-1); the client-supplied project_id is discarded here --
+                # the authoritative project_id is looked up from the DB below.
+                _, span_rowid = parse_project_scoped_node_id(annotation_input.span_id.node_id)
             except ValueError:
                 raise BadRequest(
                     f"Invalid span ID for annotation at index {idx}: {annotation_input.span_id}"
@@ -92,14 +100,15 @@ class DocumentAnnotationMutationMixin:
 
         async with info.context.db() as session:
             # Fetch spans and validate document positions
-            num_docs_by_span: dict[int, int] = {
-                rowid: num_docs
-                async for rowid, num_docs in await session.stream(
-                    select(models.Span.id, models.Span.num_documents).where(
-                        models.Span.id.in_(span_rowids)
-                    )
-                )
-            }
+            num_docs_by_span: dict[int, int] = {}
+            project_id_by_span: dict[int, int] = {}
+            async for rowid, num_docs, project_rowid in await session.stream(
+                select(models.Span.id, models.Span.num_documents, models.Trace.project_rowid)
+                .join(models.Trace, models.Span.trace_rowid == models.Trace.id)
+                .where(models.Span.id.in_(span_rowids))
+            ):
+                num_docs_by_span[rowid] = num_docs
+                project_id_by_span[rowid] = project_rowid
 
             missing = span_rowids - set(num_docs_by_span.keys())
             if missing:
@@ -160,7 +169,10 @@ class DocumentAnnotationMutationMixin:
 
         return DocumentAnnotationMutationPayload(
             document_annotations=[
-                DocumentAnnotation(id=anno.id, db_record=anno) for anno in annotations
+                DocumentAnnotation(
+                    id=anno.id, project_id=project_id_by_span[anno.span_rowid], db_record=anno
+                )
+                for anno in annotations
             ],
             query=Query(),
         )
@@ -234,8 +246,22 @@ class DocumentAnnotationMutationMixin:
                 if patch.source:
                     document_annotation.source = patch.source.value
 
+            project_id_by_span = {
+                row.id: row.project_rowid
+                for row in await session.execute(
+                    select(models.Span.id, models.Trace.project_rowid)
+                    .join(models.Trace, models.Span.trace_rowid == models.Trace.id)
+                    .where(
+                        models.Span.id.in_(
+                            {a.span_rowid for a in document_annotations_by_id.values()}
+                        )
+                    )
+                )
+            }
             patched_annotations = [
-                DocumentAnnotation(id=anno.id, db_record=anno)
+                DocumentAnnotation(
+                    id=anno.id, project_id=project_id_by_span[anno.span_rowid], db_record=anno
+                )
                 for anno in document_annotations_by_id.values()
             ]
 
@@ -304,6 +330,15 @@ class DocumentAnnotationMutationMixin:
                         "At least one document annotation is not associated with the current user."
                     )
 
+            project_id_by_span = {
+                row.id: row.project_rowid
+                for row in await session.execute(
+                    select(models.Span.id, models.Trace.project_rowid)
+                    .join(models.Trace, models.Span.trace_rowid == models.Trace.id)
+                    .where(models.Span.id.in_({a.span_rowid for a in annotations_by_id.values()}))
+                )
+            }
+
             # Now delete
             await session.execute(
                 delete(models.DocumentAnnotation).where(
@@ -317,7 +352,11 @@ class DocumentAnnotationMutationMixin:
         # Return annotations in original order
         return DocumentAnnotationMutationPayload(
             document_annotations=[
-                DocumentAnnotation(id=annotations_by_id[aid].id, db_record=annotations_by_id[aid])
+                DocumentAnnotation(
+                    id=annotations_by_id[aid].id,
+                    project_id=project_id_by_span[annotations_by_id[aid].span_rowid],
+                    db_record=annotations_by_id[aid],
+                )
                 for aid in annotation_ids
             ],
             query=Query(),

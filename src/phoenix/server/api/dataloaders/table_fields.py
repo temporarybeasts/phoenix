@@ -35,6 +35,50 @@ class TableFieldsDataLoader(DataLoader[Key, Result]):
         return [result.get((pk, str(attr))) for pk, attr in keys]
 
 
+ProjectId: TypeAlias = int
+ProjectScopedKey: TypeAlias = tuple[PrimaryKey, QueryableAttribute[Any], ProjectId]
+
+
+class ProjectScopedTableFieldsDataLoader(DataLoader[ProjectScopedKey, Result]):
+    """Project-aware counterpart to `TableFieldsDataLoader`, for the tables that
+    become project-scoped under schema-per-project (see Stage 4b-1 of the
+    SSO/RBAC fork plan): `traces`, `spans`, `project_sessions`, and their
+    annotation/cost siblings. `project_id` is mandatory in the key -- unlike
+    `TableFieldsDataLoader`'s 26 other, non-project-scoped instances, a bare
+    row id here is not by itself enough to route to the right schema once
+    Stage 4b-2 wires up real per-project routing.
+
+    For this stage, `_load_fn` still queries the shared engine exactly like
+    `TableFieldsDataLoader` does today -- no `schema_scoped_connection` yet.
+    Grouping by `project_id` here is a deliberate, narrow exception to the
+    general "guard multi-project batches" policy used elsewhere (see the
+    specialized aggregate dataloaders): this loader's per-group query-and-merge
+    is the same cheap shape whether it runs once or N times, so real fan-out
+    is trivial rather than something that needs a guard.
+    """
+
+    def __init__(self, db: DbSessionFactory, table: type[models.Base]) -> None:
+        super().__init__(load_fn=self._load_fn)
+        self._db = db
+        self._table = table
+
+    async def _load_fn(self, keys: Iterable[ProjectScopedKey]) -> list[Union[Result, ValueError]]:
+        keys = list(keys)
+        by_project: dict[ProjectId, list[Key]] = {}
+        for pk, attr, project_id in keys:
+            by_project.setdefault(project_id, []).append((pk, attr))
+        result: dict[tuple[ProjectId, PrimaryKey, _AttrStrIdentifier], Result] = {}
+        async with self._db.read() as session:
+            for project_id, project_keys in by_project.items():
+                stmt, attr_strs = _get_stmt(project_keys, self._table)
+                data = await session.stream(stmt)
+                async for row in data:
+                    pk = row[0]
+                    for i, value in enumerate(row[1:]):
+                        result[project_id, pk, attr_strs[i]] = value
+        return [result.get((project_id, pk, str(attr))) for pk, attr, project_id in keys]
+
+
 def _get_stmt(
     keys: Iterable[tuple[PrimaryKey, QueryableAttribute[Any]]],
     table: type[models.Base],

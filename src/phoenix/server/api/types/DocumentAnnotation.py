@@ -22,6 +22,9 @@ if TYPE_CHECKING:
 @strawberry.type
 class DocumentAnnotation(Node, Annotation):
     id: NodeID[int]
+    # Schema-per-project (Stage 4b-1): see the matching comment on
+    # phoenix.server.api.types.SpanAnnotation.SpanAnnotation.
+    project_id: strawberry.Private[int]
     db_record: strawberry.Private[Optional[models.DocumentAnnotation]] = None
 
     def __post_init__(self) -> None:
@@ -37,7 +40,7 @@ class DocumentAnnotation(Node, Annotation):
             val = self.db_record.name
         else:
             val = await info.context.data_loaders.document_annotation_fields.load(
-                (self.id, models.DocumentAnnotation.name),
+                (self.id, models.DocumentAnnotation.name, self.project_id),
             )
         return val
 
@@ -50,7 +53,7 @@ class DocumentAnnotation(Node, Annotation):
             val = self.db_record.annotator_kind
         else:
             val = await info.context.data_loaders.document_annotation_fields.load(
-                (self.id, models.DocumentAnnotation.annotator_kind),
+                (self.id, models.DocumentAnnotation.annotator_kind, self.project_id),
             )
         return AnnotatorKind(val)
 
@@ -66,7 +69,7 @@ class DocumentAnnotation(Node, Annotation):
             val = self.db_record.label
         else:
             val = await info.context.data_loaders.document_annotation_fields.load(
-                (self.id, models.DocumentAnnotation.label),
+                (self.id, models.DocumentAnnotation.label, self.project_id),
             )
         return val
 
@@ -81,7 +84,7 @@ class DocumentAnnotation(Node, Annotation):
             val = self.db_record.score
         else:
             val = await info.context.data_loaders.document_annotation_fields.load(
-                (self.id, models.DocumentAnnotation.score),
+                (self.id, models.DocumentAnnotation.score, self.project_id),
             )
         return val if val is not None and isfinite(val) else None
 
@@ -97,7 +100,7 @@ class DocumentAnnotation(Node, Annotation):
             val = self.db_record.explanation
         else:
             val = await info.context.data_loaders.document_annotation_fields.load(
-                (self.id, models.DocumentAnnotation.explanation),
+                (self.id, models.DocumentAnnotation.explanation, self.project_id),
             )
         return val
 
@@ -110,7 +113,7 @@ class DocumentAnnotation(Node, Annotation):
             val = self.db_record.metadata_
         else:
             val = await info.context.data_loaders.document_annotation_fields.load(
-                (self.id, models.DocumentAnnotation.metadata_),
+                (self.id, models.DocumentAnnotation.metadata_, self.project_id),
             )
         return JSON(val)
 
@@ -123,7 +126,7 @@ class DocumentAnnotation(Node, Annotation):
             val = self.db_record.document_position
         else:
             val = await info.context.data_loaders.document_annotation_fields.load(
-                (self.id, models.DocumentAnnotation.document_position),
+                (self.id, models.DocumentAnnotation.document_position, self.project_id),
             )
         return val
 
@@ -136,7 +139,7 @@ class DocumentAnnotation(Node, Annotation):
             val = self.db_record.identifier
         else:
             val = await info.context.data_loaders.document_annotation_fields.load(
-                (self.id, models.DocumentAnnotation.identifier),
+                (self.id, models.DocumentAnnotation.identifier, self.project_id),
             )
         return val
 
@@ -149,7 +152,7 @@ class DocumentAnnotation(Node, Annotation):
             val = self.db_record.source
         else:
             val = await info.context.data_loaders.document_annotation_fields.load(
-                (self.id, models.DocumentAnnotation.source),
+                (self.id, models.DocumentAnnotation.source, self.project_id),
             )
         return AnnotationSource(val)
 
@@ -162,7 +165,7 @@ class DocumentAnnotation(Node, Annotation):
             val = self.db_record.created_at
         else:
             val = await info.context.data_loaders.document_annotation_fields.load(
-                (self.id, models.DocumentAnnotation.created_at),
+                (self.id, models.DocumentAnnotation.created_at, self.project_id),
             )
         return val
 
@@ -175,7 +178,7 @@ class DocumentAnnotation(Node, Annotation):
             val = self.db_record.updated_at
         else:
             val = await info.context.data_loaders.document_annotation_fields.load(
-                (self.id, models.DocumentAnnotation.updated_at),
+                (self.id, models.DocumentAnnotation.updated_at, self.project_id),
             )
         return val
 
@@ -188,11 +191,11 @@ class DocumentAnnotation(Node, Annotation):
             span_rowid = self.db_record.span_rowid
         else:
             span_rowid = await info.context.data_loaders.document_annotation_fields.load(
-                (self.id, models.DocumentAnnotation.span_rowid),
+                (self.id, models.DocumentAnnotation.span_rowid, self.project_id),
             )
         from .Span import Span
 
-        return Span(id=span_rowid)
+        return Span(id=span_rowid, project_id=self.project_id)
 
     @strawberry.field(description="The user that produced the annotation.")  # type: ignore
     async def user(
@@ -203,7 +206,7 @@ class DocumentAnnotation(Node, Annotation):
             user_id = self.db_record.user_id
         else:
             user_id = await info.context.data_loaders.document_annotation_fields.load(
-                (self.id, models.DocumentAnnotation.user_id),
+                (self.id, models.DocumentAnnotation.user_id, self.project_id),
             )
         if user_id is None:
             return None

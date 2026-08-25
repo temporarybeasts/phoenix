@@ -19,7 +19,10 @@ from phoenix.server.api.input_types.PatchAnnotationInput import PatchAnnotationI
 from phoenix.server.api.queries import Query
 from phoenix.server.api.types.AnnotationSource import AnnotationSource
 from phoenix.server.api.types.AnnotatorKind import AnnotatorKind
-from phoenix.server.api.types.node import from_global_id_with_expected_type
+from phoenix.server.api.types.node import (
+    from_global_id_with_expected_type,
+    parse_project_scoped_node_id,
+)
 from phoenix.server.api.types.SpanAnnotation import SpanAnnotation
 from phoenix.server.bearer_auth import PhoenixUser
 from phoenix.server.dml_event import SpanAnnotationDeleteEvent, SpanAnnotationInsertEvent
@@ -56,7 +59,12 @@ class SpanAnnotationMutationMixin:
         span_rowids = []
         for idx, annotation_input in enumerate(input):
             try:
-                span_rowid = from_global_id_with_expected_type(annotation_input.span_id, "Span")
+                if annotation_input.span_id.type_name != "Span":
+                    raise ValueError("not a Span global id")
+                # Span's node id is compound "<project_id>:<row_id>" (Stage
+                # 4b-1); the client-supplied project_id is discarded here --
+                # the authoritative project_id is looked up from the DB below.
+                _, span_rowid = parse_project_scoped_node_id(annotation_input.span_id.node_id)
             except ValueError:
                 raise BadRequest(
                     f"Invalid span ID for annotation at index {idx}: {annotation_input.span_id}"
@@ -64,11 +72,15 @@ class SpanAnnotationMutationMixin:
             span_rowids.append(span_rowid)
 
         async with info.context.db() as session:
-            existing_span_rowids = set(
-                await session.scalars(
-                    select(models.Span.id).where(models.Span.id.in_(set(span_rowids)))
+            project_id_by_span_rowid: dict[int, int] = {
+                row.id: row.project_rowid
+                for row in await session.execute(
+                    select(models.Span.id, models.Trace.project_rowid)
+                    .join(models.Trace, models.Span.trace_rowid == models.Trace.id)
+                    .where(models.Span.id.in_(set(span_rowids)))
                 )
-            )
+            }
+            existing_span_rowids = set(project_id_by_span_rowid)
             missing_span_ids = [
                 str(annotation_input.span_id)
                 for span_rowid, annotation_input in zip(span_rowids, input)
@@ -153,7 +165,12 @@ class SpanAnnotationMutationMixin:
 
             # Convert the fully loaded annotations to GQL types
             returned_annotations = [
-                SpanAnnotation(id=anno.id, db_record=anno) for anno in ordered_final_annotations
+                SpanAnnotation(
+                    id=anno.id,
+                    project_id=project_id_by_span_rowid[anno.span_rowid],
+                    db_record=anno,
+                )
+                for anno in ordered_final_annotations
             ]
 
             await session.commit()
@@ -173,16 +190,23 @@ class SpanAnnotationMutationMixin:
             user_id = int(user.identity)
 
         try:
-            span_rowid = from_global_id_with_expected_type(annotation_input.span_id, "Span")
+            if annotation_input.span_id.type_name != "Span":
+                raise ValueError("not a Span global id")
+            _, span_rowid = parse_project_scoped_node_id(annotation_input.span_id.node_id)
         except ValueError:
             raise BadRequest(f"Invalid span ID: {annotation_input.span_id}")
 
         async with info.context.db() as session:
-            if (
-                await session.scalar(select(models.Span.id).where(models.Span.id == span_rowid))
-                is None
-            ):
+            span_project_row = (
+                await session.execute(
+                    select(models.Span.id, models.Trace.project_rowid)
+                    .join(models.Trace, models.Span.trace_rowid == models.Trace.id)
+                    .where(models.Span.id == span_rowid)
+                )
+            ).first()
+            if span_project_row is None:
                 raise NotFound(f"Could not find span with ID: {annotation_input.span_id}")
+            project_id = span_project_row.project_rowid
             note_identifier = get_note_identifier("px-span-note")
             values = {
                 "span_rowid": span_rowid,
@@ -204,7 +228,7 @@ class SpanAnnotationMutationMixin:
 
             info.context.event_queue.put(SpanAnnotationInsertEvent((processed_annotation.id,)))
             returned_annotation = SpanAnnotation(
-                id=processed_annotation.id, db_record=processed_annotation
+                id=processed_annotation.id, project_id=project_id, db_record=processed_annotation
             )
             await session.commit()
         return SpanAnnotationMutationPayload(
@@ -276,8 +300,24 @@ class SpanAnnotationMutationMixin:
                     span_annotation.source = patch.source.value
                 session.add(span_annotation)
 
+            project_id_by_span_rowid = {
+                row.id: row.project_rowid
+                for row in await session.execute(
+                    select(models.Span.id, models.Trace.project_rowid)
+                    .join(models.Trace, models.Span.trace_rowid == models.Trace.id)
+                    .where(
+                        models.Span.id.in_(
+                            {sa.span_rowid for sa in span_annotations_by_id.values()}
+                        )
+                    )
+                )
+            }
             patched_annotations = [
-                SpanAnnotation(id=span_annotation.id, db_record=span_annotation)
+                SpanAnnotation(
+                    id=span_annotation.id,
+                    project_id=project_id_by_span_rowid[span_annotation.span_rowid],
+                    db_record=span_annotation,
+                )
                 for span_annotation in span_annotations_by_id.values()
             ]
 
@@ -340,9 +380,24 @@ class SpanAnnotationMutationMixin:
                     f"Could not find span annotations with IDs: {missing_span_annotation_ids}"
                 )
 
+            project_id_by_span_rowid = {
+                row.id: row.project_rowid
+                for row in await session.execute(
+                    select(models.Span.id, models.Trace.project_rowid)
+                    .join(models.Trace, models.Span.trace_rowid == models.Trace.id)
+                    .where(
+                        models.Span.id.in_(
+                            {a.span_rowid for a in deleted_annotations_by_id.values()}
+                        )
+                    )
+                )
+            }
+
         deleted_annotations_gql = [
             SpanAnnotation(
-                id=deleted_annotations_by_id[id].id, db_record=deleted_annotations_by_id[id]
+                id=deleted_annotations_by_id[id].id,
+                project_id=project_id_by_span_rowid[deleted_annotations_by_id[id].span_rowid],
+                db_record=deleted_annotations_by_id[id],
             )
             for id in span_annotation_ids
         ]

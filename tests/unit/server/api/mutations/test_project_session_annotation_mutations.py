@@ -134,7 +134,11 @@ class TestProjectSessionAnnotationMutations:
         - GraphQL schema compliance
         - Database consistency and constraint enforcement
         """
-        project_session_gid = str(GlobalID("ProjectSession", str(project_session_data.id)))
+        project_session_gid = str(
+            GlobalID(
+                "ProjectSession", f"{project_session_data.project_id}:{project_session_data.id}"
+            )
+        )
 
         # ============================================================================
         # A. CREATE OPERATIONS (Success Cases)
@@ -963,7 +967,9 @@ class TestProjectSessionAnnotationMutations:
         # ============================================================================
 
         # D1. Create with nonexistent foreign key should error
-        nonexistent_project_session_id = str(GlobalID("ProjectSession", "999999"))
+        nonexistent_project_session_id = str(
+            GlobalID("ProjectSession", f"{project_session_data.project_id}:999999")
+        )
         invalid_foreign_key_input = {
             "input": {
                 "projectSessionId": nonexistent_project_session_id,

@@ -471,6 +471,7 @@ async def test_delete_trace_by_relay_global_id(
         )
         trace = trace_result.scalar_one()
         trace_row_id = trace.id
+        trace_project_rowid = trace.project_rowid
 
         # Get the spans in this trace
         span_result = await session.execute(
@@ -480,7 +481,7 @@ async def test_delete_trace_by_relay_global_id(
         span_row_ids = [span.id for span in spans]
 
     # Create relay GlobalID for the trace
-    trace_global_id = GlobalID(type_name="Trace", node_id=str(trace_row_id))
+    trace_global_id = GlobalID(type_name="Trace", node_id=f"{trace_project_rowid}:{trace_row_id}")
 
     # Delete the trace via the API using relay GlobalID
     url = f"v1/traces/{trace_global_id}"
@@ -515,7 +516,7 @@ async def test_delete_trace_by_relay_id_not_found(
     2. The error message mentions relay ID
     """
     # Create a relay GlobalID for a non-existent trace
-    non_existent_global_id = GlobalID(type_name="Trace", node_id="999999")
+    non_existent_global_id = GlobalID(type_name="Trace", node_id="1:999999")
     url = f"v1/traces/{non_existent_global_id}"
 
     response = await httpx_client.delete(url)
@@ -656,7 +657,9 @@ async def test_transfer_traces_moves_traces_to_destination(
     response = await httpx_client.post(
         "v1/traces/transfer",
         json={
-            "trace_identifiers": [str(GlobalID("Trace", str(rowid))) for rowid in trace_rowids],
+            "trace_identifiers": [
+                str(GlobalID("Trace", f"{source_rowid}:{rowid}")) for rowid in trace_rowids
+            ],
             "destination_project_identifier": "dst-proj",
         },
     )
@@ -679,13 +682,13 @@ async def test_transfer_traces_accepts_project_global_id(
     db: DbSessionFactory,
     httpx_client: httpx.AsyncClient,
 ) -> None:
-    _, trace_rowids = await _project_with_traces(db, "src-gid", 1, "cccc")
+    source_rowid, trace_rowids = await _project_with_traces(db, "src-gid", 1, "cccc")
     dest_rowid, _ = await _project_with_traces(db, "dst-gid", 1, "dddd")
 
     response = await httpx_client.post(
         "v1/traces/transfer",
         json={
-            "trace_identifiers": [str(GlobalID("Trace", str(trace_rowids[0])))],
+            "trace_identifiers": [str(GlobalID("Trace", f"{source_rowid}:{trace_rowids[0]}"))],
             "destination_project_identifier": str(GlobalID("Project", str(dest_rowid))),
         },
     )
@@ -697,9 +700,9 @@ async def test_transfer_traces_deduplicates_repeated_ids(
     db: DbSessionFactory,
     httpx_client: httpx.AsyncClient,
 ) -> None:
-    _, trace_rowids = await _project_with_traces(db, "src-dupe", 1, "eeee")
+    source_rowid, trace_rowids = await _project_with_traces(db, "src-dupe", 1, "eeee")
     await _project_with_traces(db, "dst-dupe", 1, "ffff")
-    trace_gid = str(GlobalID("Trace", str(trace_rowids[0])))
+    trace_gid = str(GlobalID("Trace", f"{source_rowid}:{trace_rowids[0]}"))
 
     response = await httpx_client.post(
         "v1/traces/transfer",
@@ -716,16 +719,16 @@ async def test_transfer_traces_rejects_multiple_source_projects(
     db: DbSessionFactory,
     httpx_client: httpx.AsyncClient,
 ) -> None:
-    _, traces_a = await _project_with_traces(db, "multi-a", 1, "1111")
-    _, traces_b = await _project_with_traces(db, "multi-b", 1, "2222")
+    project_a, traces_a = await _project_with_traces(db, "multi-a", 1, "1111")
+    project_b, traces_b = await _project_with_traces(db, "multi-b", 1, "2222")
     await _project_with_traces(db, "multi-dst", 1, "3333")
 
     response = await httpx_client.post(
         "v1/traces/transfer",
         json={
             "trace_identifiers": [
-                str(GlobalID("Trace", str(traces_a[0]))),
-                str(GlobalID("Trace", str(traces_b[0]))),
+                str(GlobalID("Trace", f"{project_a}:{traces_a[0]}")),
+                str(GlobalID("Trace", f"{project_b}:{traces_b[0]}")),
             ],
             "destination_project_identifier": "multi-dst",
         },
@@ -753,7 +756,7 @@ async def test_transfer_traces_unknown_trace(
     response = await httpx_client.post(
         "v1/traces/transfer",
         json={
-            "trace_identifiers": [str(GlobalID("Trace", "99999"))],
+            "trace_identifiers": [str(GlobalID("Trace", "1:99999"))],
             "destination_project_identifier": "unknown-dst",
         },
     )
@@ -764,11 +767,11 @@ async def test_transfer_traces_unknown_destination_project(
     db: DbSessionFactory,
     httpx_client: httpx.AsyncClient,
 ) -> None:
-    _, trace_rowids = await _project_with_traces(db, "src-nodst", 1, "6666")
+    source_rowid, trace_rowids = await _project_with_traces(db, "src-nodst", 1, "6666")
     response = await httpx_client.post(
         "v1/traces/transfer",
         json={
-            "trace_identifiers": [str(GlobalID("Trace", str(trace_rowids[0])))],
+            "trace_identifiers": [str(GlobalID("Trace", f"{source_rowid}:{trace_rowids[0]}"))],
             "destination_project_identifier": "does-not-exist",
         },
     )
@@ -786,7 +789,10 @@ async def test_transfer_traces_accepts_otel_trace_ids(
     response = await httpx_client.post(
         "v1/traces/transfer",
         json={
-            "trace_identifiers": ["abcd0000", str(GlobalID("Trace", str(trace_rowids[1])))],
+            "trace_identifiers": [
+                "abcd0000",
+                str(GlobalID("Trace", f"{source_rowid}:{trace_rowids[1]}")),
+            ],
             "destination_project_identifier": "dst-otel",
         },
     )

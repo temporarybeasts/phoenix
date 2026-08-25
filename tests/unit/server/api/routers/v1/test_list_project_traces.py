@@ -9,7 +9,10 @@ from sqlalchemy import insert
 from strawberry.relay import GlobalID
 
 from phoenix.db import models
-from phoenix.server.api.types.node import from_global_id_with_expected_type
+from phoenix.server.api.types.node import (
+    from_global_id_with_expected_type,
+    parse_project_scoped_node_id,
+)
 from phoenix.server.api.types.Project import Project as ProjectNodeType
 from phoenix.server.api.types.ProjectSession import ProjectSession as ProjectSessionNodeType
 from phoenix.server.api.types.Span import Span as SpanNodeType
@@ -164,10 +167,11 @@ class TestListProjectTraces:
 
         trace_data = response.json()["data"][0]
         # Verify trace GlobalID
-        trace_rowid = from_global_id_with_expected_type(
-            GlobalID.from_id(trace_data["id"]), TraceNodeType.__name__
-        )
+        trace_gid = GlobalID.from_id(trace_data["id"])
+        assert trace_gid.type_name == TraceNodeType.__name__
+        trace_project_rowid, trace_rowid = parse_project_scoped_node_id(trace_gid.node_id)
         assert trace_rowid == traces[0].id
+        assert trace_project_rowid == project.id
 
         # Verify project GlobalID
         project_rowid = from_global_id_with_expected_type(
@@ -191,8 +195,7 @@ class TestListProjectTraces:
 
         data = response.json()
         returned_ids = [
-            from_global_id_with_expected_type(GlobalID.from_id(t["id"]), TraceNodeType.__name__)
-            for t in data["data"]
+            parse_project_scoped_node_id(GlobalID.from_id(t["id"]).node_id)[1] for t in data["data"]
         ]
         assert returned_ids == sorted(returned_ids, reverse=True)
 
@@ -403,9 +406,9 @@ class TestListProjectTraces:
         assert "end_time" in span_data
 
         # Verify the span GlobalID is valid
-        span_rowid = from_global_id_with_expected_type(
-            GlobalID.from_id(span_data["id"]), SpanNodeType.__name__
-        )
+        span_gid = GlobalID.from_id(span_data["id"])
+        assert span_gid.type_name == SpanNodeType.__name__
+        _, span_rowid = parse_project_scoped_node_id(span_gid.node_id)
         assert span_rowid > 0
 
     async def test_list_traces_filter_by_session_id_string(
@@ -439,7 +442,9 @@ class TestListProjectTraces:
         )
 
         # Use GlobalID for sess-b (sessions[1])
-        session_global_id = str(GlobalID(ProjectSessionNodeType.__name__, str(sessions[1].id)))
+        session_global_id = str(
+            GlobalID(ProjectSessionNodeType.__name__, f"{sessions[1].project_id}:{sessions[1].id}")
+        )
         response = await httpx_client.get(
             f"v1/projects/{project.name}/traces",
             params={"session_identifier": session_global_id},
@@ -462,7 +467,9 @@ class TestListProjectTraces:
         )
 
         # Mix: string for sess-x, GlobalID for sess-z
-        session_z_gid = str(GlobalID(ProjectSessionNodeType.__name__, str(sessions[2].id)))
+        session_z_gid = str(
+            GlobalID(ProjectSessionNodeType.__name__, f"{sessions[2].project_id}:{sessions[2].id}")
+        )
         response = await httpx_client.get(
             f"v1/projects/{project.name}/traces",
             params={"session_identifier": ["sess-x", session_z_gid]},

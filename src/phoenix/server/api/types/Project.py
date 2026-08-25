@@ -54,7 +54,7 @@ from phoenix.server.api.types.FilterVocabularyTerm import (
     trace_filter_vocabulary_terms,
 )
 from phoenix.server.api.types.GenerativeModel import GenerativeModel
-from phoenix.server.api.types.node import from_global_id_with_expected_type
+from phoenix.server.api.types.node import parse_project_scoped_node_id
 from phoenix.server.api.types.pagination import (
     ConnectionArgs,
     Cursor,
@@ -591,16 +591,20 @@ class Project(Node):
     async def trace(self, trace_id: ID, info: Info[Context, None]) -> Optional[Trace]:
         stmt = select(models.Trace).where(models.Trace.project_rowid == self.id)
         try:
-            trace_rowid = from_global_id_with_expected_type(
-                GlobalID.from_id(str(trace_id)), Trace.__name__
-            )
+            global_id = GlobalID.from_id(str(trace_id))
+            if global_id.type_name != Trace.__name__:
+                raise ValueError("not a Trace global id")
+            # Trace's node id is compound "<project_id>:<row_id>" (Stage
+            # 4b-1); the client-supplied project_id is discarded -- the
+            # query above already scopes to this project via project_rowid.
+            _, trace_rowid = parse_project_scoped_node_id(global_id.node_id)
             stmt = stmt.where(models.Trace.id == trace_rowid)
         except ValueError:
             stmt = stmt.where(models.Trace.trace_id == str(trace_id))
         async with info.context.db.read() as session:
             if (trace := await session.scalar(stmt)) is None:
                 return None
-        return Trace(id=trace.id, db_record=trace)
+        return Trace(id=trace.id, project_id=self.id, db_record=trace)
 
     @strawberry.field(extensions=[RequireForwardPaginationExtension()])  # type: ignore[untyped-decorator]
     async def spans(
@@ -701,7 +705,7 @@ class Project(Node):
                         type=sort_config.column_data_type,
                         value=span_record[1],
                     )
-                cursors_and_nodes.append((cursor, Span(id=span_rowid)))
+                cursors_and_nodes.append((cursor, Span(id=span_rowid, project_id=self.id)))
             has_next_page = True
             try:
                 await span_records.__anext__()
@@ -793,7 +797,12 @@ class Project(Node):
                         value=record[1],
                     )
                 cursors_and_nodes.append(
-                    (cursor, ProjectSession(id=project_session.id, db_record=project_session))
+                    (
+                        cursor,
+                        ProjectSession(
+                            id=project_session.id, project_id=self.id, db_record=project_session
+                        ),
+                    )
                 )
             has_next_page = True
             try:
@@ -3007,7 +3016,9 @@ async def _paginate_span_by_trace_start_time(
             first_record = group[0]
             # Only create edge if trace has a root span
             if (span_rowid := first_record[2]) is not None:
-                edges.append(Edge(node=Span(id=span_rowid), cursor=str(cursor)))
+                edges.append(
+                    Edge(node=Span(id=span_rowid, project_id=project_rowid), cursor=str(cursor))
+                )
         has_next_page = True
         try:
             await records.__anext__()

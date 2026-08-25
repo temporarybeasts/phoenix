@@ -11,7 +11,7 @@ from openinference.semconv.trace import SpanAttributes
 from sqlalchemy import select
 from sqlalchemy.sql.expression import tuple_
 from strawberry import UNSET, Info, lazy
-from strawberry.relay import Connection, Node, NodeID
+from strawberry.relay import Connection, Node
 
 from phoenix.db import models
 from phoenix.server.api.context import Context
@@ -40,12 +40,20 @@ if TYPE_CHECKING:
 
 @strawberry.type
 class ProjectSession(Node):
-    id: NodeID[int]
+    # Schema-per-project (Stage 4b-1): see the matching comment on
+    # phoenix.server.api.types.Trace.Trace -- same compound-GlobalID
+    # rationale applies here.
+    id: strawberry.Private[int]
+    project_id: strawberry.Private[int]
     db_record: strawberry.Private[Optional[models.ProjectSession]] = None
 
     def __post_init__(self) -> None:
         if self.db_record and self.id != self.db_record.id:
             raise ValueError("ProjectSession ID mismatch")
+
+    @classmethod
+    def resolve_id(cls, root: "ProjectSession", *, info: Info) -> str:
+        return f"{root.project_id}:{root.id}"
 
     @strawberry.field
     async def session_id(
@@ -56,7 +64,7 @@ class ProjectSession(Node):
             val = self.db_record.session_id
         else:
             val = await info.context.data_loaders.project_session_fields.load(
-                (self.id, models.ProjectSession.session_id),
+                (self.id, models.ProjectSession.session_id, self.project_id),
             )
         return val
 
@@ -69,7 +77,7 @@ class ProjectSession(Node):
             val = self.db_record.start_time
         else:
             val = await info.context.data_loaders.project_session_fields.load(
-                (self.id, models.ProjectSession.start_time),
+                (self.id, models.ProjectSession.start_time, self.project_id),
             )
         return val
 
@@ -82,7 +90,7 @@ class ProjectSession(Node):
             val = self.db_record.end_time
         else:
             val = await info.context.data_loaders.project_session_fields.load(
-                (self.id, models.ProjectSession.end_time),
+                (self.id, models.ProjectSession.end_time, self.project_id),
             )
         return val
 
@@ -93,13 +101,7 @@ class ProjectSession(Node):
     ) -> Annotated["Project", lazy(".Project")]:
         from phoenix.server.api.types.Project import Project
 
-        if self.db_record:
-            project_rowid = self.db_record.project_id
-        else:
-            project_rowid = await info.context.data_loaders.project_session_fields.load(
-                (self.id, models.ProjectSession.project_id),
-            )
-        return Project(id=project_rowid)
+        return Project(id=self.project_id)
 
     @strawberry.field
     async def num_traces(
@@ -126,6 +128,7 @@ class ProjectSession(Node):
         return SpanIOValue(
             mime_type=MimeType(record.mime_type.value),
             span_rowid=record.span_rowid,
+            project_id=self.project_id,
             attr=models.Span.input_value,
             truncated_value=truncate_value(record.truncated_value),
         )
@@ -141,6 +144,7 @@ class ProjectSession(Node):
         return SpanIOValue(
             mime_type=MimeType(record.mime_type.value),
             span_rowid=record.span_rowid,
+            project_id=self.project_id,
             attr=models.Span.output_value,
             truncated_value=truncate_value(record.truncated_value),
         )
@@ -204,7 +208,9 @@ class ProjectSession(Node):
                         value=trace.start_time,
                     ),
                 )
-                cursors_and_nodes.append((cursor, Trace(id=trace.id, db_record=trace)))
+                cursors_and_nodes.append(
+                    (cursor, Trace(id=trace.id, project_id=self.project_id, db_record=trace))
+                )
             has_next_page = True
             try:
                 await traces.__anext__()
@@ -277,7 +283,9 @@ class ProjectSession(Node):
 
         annotations = await info.context.data_loaders.session_annotations_by_session.load(self.id)
         return [
-            ProjectSessionAnnotation(id=annotation.id, db_record=annotation)
+            ProjectSessionAnnotation(
+                id=annotation.id, project_id=self.project_id, db_record=annotation
+            )
             for annotation in annotations
         ]
 

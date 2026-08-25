@@ -22,6 +22,11 @@ if TYPE_CHECKING:
 @strawberry.type
 class SpanAnnotation(Node, Annotation):
     id: NodeID[int]
+    # Schema-per-project (Stage 4b-1): an annotation's project is always its
+    # span's project, so this is resolved once at construction (not via a
+    # per-request lookup) and threaded straight through to the loaders below,
+    # which need it once they're project-scoped.
+    project_id: strawberry.Private[int]
     db_record: strawberry.Private[Optional[models.SpanAnnotation]] = None
 
     def __post_init__(self) -> None:
@@ -37,7 +42,7 @@ class SpanAnnotation(Node, Annotation):
             val = self.db_record.name
         else:
             val = await info.context.data_loaders.span_annotation_fields.load(
-                (self.id, models.SpanAnnotation.name),
+                (self.id, models.SpanAnnotation.name, self.project_id),
             )
         return val
 
@@ -50,7 +55,7 @@ class SpanAnnotation(Node, Annotation):
             val = self.db_record.annotator_kind
         else:
             val = await info.context.data_loaders.span_annotation_fields.load(
-                (self.id, models.SpanAnnotation.annotator_kind),
+                (self.id, models.SpanAnnotation.annotator_kind, self.project_id),
             )
         return AnnotatorKind(val)
 
@@ -66,7 +71,7 @@ class SpanAnnotation(Node, Annotation):
             val = self.db_record.label
         else:
             val = await info.context.data_loaders.span_annotation_fields.load(
-                (self.id, models.SpanAnnotation.label),
+                (self.id, models.SpanAnnotation.label, self.project_id),
             )
         return val
 
@@ -81,7 +86,7 @@ class SpanAnnotation(Node, Annotation):
             val = self.db_record.score
         else:
             val = await info.context.data_loaders.span_annotation_fields.load(
-                (self.id, models.SpanAnnotation.score),
+                (self.id, models.SpanAnnotation.score, self.project_id),
             )
         return val if val is not None and isfinite(val) else None
 
@@ -97,7 +102,7 @@ class SpanAnnotation(Node, Annotation):
             val = self.db_record.explanation
         else:
             val = await info.context.data_loaders.span_annotation_fields.load(
-                (self.id, models.SpanAnnotation.explanation),
+                (self.id, models.SpanAnnotation.explanation, self.project_id),
             )
         return val
 
@@ -110,7 +115,7 @@ class SpanAnnotation(Node, Annotation):
             val = self.db_record.metadata_
         else:
             val = await info.context.data_loaders.span_annotation_fields.load(
-                (self.id, models.SpanAnnotation.metadata_),
+                (self.id, models.SpanAnnotation.metadata_, self.project_id),
             )
         return JSON(val)
 
@@ -123,7 +128,7 @@ class SpanAnnotation(Node, Annotation):
             val = self.db_record.source
         else:
             val = await info.context.data_loaders.span_annotation_fields.load(
-                (self.id, models.SpanAnnotation.source),
+                (self.id, models.SpanAnnotation.source, self.project_id),
             )
         return AnnotationSource(val)
 
@@ -136,7 +141,7 @@ class SpanAnnotation(Node, Annotation):
             val = self.db_record.identifier
         else:
             val = await info.context.data_loaders.span_annotation_fields.load(
-                (self.id, models.SpanAnnotation.identifier),
+                (self.id, models.SpanAnnotation.identifier, self.project_id),
             )
         return val
 
@@ -149,7 +154,7 @@ class SpanAnnotation(Node, Annotation):
             val = self.db_record.created_at
         else:
             val = await info.context.data_loaders.span_annotation_fields.load(
-                (self.id, models.SpanAnnotation.created_at),
+                (self.id, models.SpanAnnotation.created_at, self.project_id),
             )
         return val
 
@@ -162,7 +167,7 @@ class SpanAnnotation(Node, Annotation):
             val = self.db_record.updated_at
         else:
             val = await info.context.data_loaders.span_annotation_fields.load(
-                (self.id, models.SpanAnnotation.updated_at),
+                (self.id, models.SpanAnnotation.updated_at, self.project_id),
             )
         return val
 
@@ -177,9 +182,9 @@ class SpanAnnotation(Node, Annotation):
             span_rowid = self.db_record.span_rowid
         else:
             span_rowid = await info.context.data_loaders.span_annotation_fields.load(
-                (self.id, models.SpanAnnotation.span_rowid),
+                (self.id, models.SpanAnnotation.span_rowid, self.project_id),
             )
-        return GlobalID(type_name=Span.__name__, node_id=str(span_rowid))
+        return GlobalID(type_name=Span.__name__, node_id=f"{self.project_id}:{span_rowid}")
 
     @strawberry.field(description="The span associated with the annotation.")  # type: ignore
     async def span(
@@ -190,11 +195,11 @@ class SpanAnnotation(Node, Annotation):
             span_rowid = self.db_record.span_rowid
         else:
             span_rowid = await info.context.data_loaders.span_annotation_fields.load(
-                (self.id, models.SpanAnnotation.span_rowid),
+                (self.id, models.SpanAnnotation.span_rowid, self.project_id),
             )
         from .Span import Span
 
-        return Span(id=span_rowid)
+        return Span(id=span_rowid, project_id=self.project_id)
 
     @strawberry.field(description="The user that produced the annotation.")  # type: ignore
     async def user(
@@ -205,7 +210,7 @@ class SpanAnnotation(Node, Annotation):
             user_id = self.db_record.user_id
         else:
             user_id = await info.context.data_loaders.span_annotation_fields.load(
-                (self.id, models.SpanAnnotation.user_id),
+                (self.id, models.SpanAnnotation.user_id, self.project_id),
             )
         if user_id is None:
             return None

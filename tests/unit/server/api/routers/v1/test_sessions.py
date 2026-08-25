@@ -11,7 +11,10 @@ from strawberry.relay import GlobalID
 
 from phoenix.db import models
 from phoenix.server.api.routers.v1.sessions import _parse_session_global_id
-from phoenix.server.api.types.node import from_global_id_with_expected_type
+from phoenix.server.api.types.node import (
+    from_global_id_with_expected_type,
+    parse_project_scoped_node_id,
+)
 from phoenix.server.api.types.Project import Project as ProjectNodeType
 from phoenix.server.api.types.ProjectSession import ProjectSession as ProjectSessionNodeType
 from phoenix.server.api.types.Trace import Trace as TraceNodeType
@@ -22,7 +25,8 @@ from phoenix.server.types import DbSessionFactory
 
 class TestParseSessionGlobalId:
     def test_returns_row_id_for_valid_global_id(self) -> None:
-        global_id = str(GlobalID(ProjectSessionNodeType.__name__, "42"))
+        # ProjectSession's node id is compound "<project_id>:<row_id>" (Stage 4b-1).
+        global_id = str(GlobalID(ProjectSessionNodeType.__name__, "1:42"))
         assert _parse_session_global_id(global_id) == 42
 
     def test_returns_none_for_plain_session_id(self) -> None:
@@ -43,7 +47,11 @@ class TestGetSession:
         db: DbSessionFactory,
     ) -> None:
         project, session_model, traces = await _insert_session_with_traces(db)
-        session_global_id = str(GlobalID(ProjectSessionNodeType.__name__, str(session_model.id)))
+        session_global_id = str(
+            GlobalID(
+                ProjectSessionNodeType.__name__, f"{session_model.project_id}:{session_model.id}"
+            )
+        )
 
         response = await httpx_client.get(f"v1/sessions/{session_global_id}")
         assert response.status_code == 200
@@ -129,7 +137,11 @@ class TestDeleteSession:
         db: DbSessionFactory,
     ) -> None:
         project, session_model, traces = await _insert_session_with_traces(db)
-        session_global_id = str(GlobalID(ProjectSessionNodeType.__name__, str(session_model.id)))
+        session_global_id = str(
+            GlobalID(
+                ProjectSessionNodeType.__name__, f"{session_model.project_id}:{session_model.id}"
+            )
+        )
 
         response = await httpx_client.delete(f"v1/sessions/{session_global_id}")
         assert response.status_code == 204
@@ -213,7 +225,7 @@ class TestDeleteSessions:
     ) -> None:
         project, sessions_with_traces = await _insert_project_with_sessions(db, num_sessions=3)
         global_ids = [
-            str(GlobalID(ProjectSessionNodeType.__name__, str(s.id)))
+            str(GlobalID(ProjectSessionNodeType.__name__, f"{s.project_id}:{s.id}"))
             for s, _ in sessions_with_traces
         ]
 
@@ -234,7 +246,10 @@ class TestDeleteSessions:
     ) -> None:
         project, sessions_with_traces = await _insert_project_with_sessions(db, num_sessions=2)
         global_id = str(
-            GlobalID(ProjectSessionNodeType.__name__, str(sessions_with_traces[0][0].id))
+            GlobalID(
+                ProjectSessionNodeType.__name__,
+                f"{sessions_with_traces[0][0].project_id}:{sessions_with_traces[0][0].id}",
+            )
         )
         session_id = sessions_with_traces[1][0].session_id
 
@@ -494,10 +509,7 @@ class TestListProjectSessions:
         # Sessions should be ordered by id ASC by default
         returned_ids = [s["id"] for s in data["data"]]
         decoded_ids = [
-            from_global_id_with_expected_type(
-                GlobalID.from_id(gid), ProjectSessionNodeType.__name__
-            )
-            for gid in returned_ids
+            parse_project_scoped_node_id(GlobalID.from_id(gid).node_id)[1] for gid in returned_ids
         ]
         assert decoded_ids == sorted(decoded_ids)
 
@@ -650,10 +662,11 @@ def _assert_session_data(
     session_model: models.ProjectSession,
     traces: list[models.Trace],
 ) -> None:
-    session_id = from_global_id_with_expected_type(
-        GlobalID.from_id(data["id"]), ProjectSessionNodeType.__name__
-    )
+    session_gid = GlobalID.from_id(data["id"])
+    assert session_gid.type_name == ProjectSessionNodeType.__name__
+    session_project_id, session_id = parse_project_scoped_node_id(session_gid.node_id)
     assert session_id == session_model.id
+    assert session_project_id == project.id
     assert data["session_id"] == session_model.session_id
 
     project_id = from_global_id_with_expected_type(
@@ -663,10 +676,11 @@ def _assert_session_data(
 
     assert len(data["traces"]) == len(traces)
     for trace_data, trace_model in zip(data["traces"], traces):
-        trace_id = from_global_id_with_expected_type(
-            GlobalID.from_id(trace_data["id"]), TraceNodeType.__name__
-        )
+        trace_gid = GlobalID.from_id(trace_data["id"])
+        assert trace_gid.type_name == TraceNodeType.__name__
+        trace_project_id, trace_id = parse_project_scoped_node_id(trace_gid.node_id)
         assert trace_id == trace_model.id
+        assert trace_project_id == project.id
         assert trace_data["trace_id"] == trace_model.trace_id
 
 

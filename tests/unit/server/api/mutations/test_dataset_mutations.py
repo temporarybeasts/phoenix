@@ -195,7 +195,10 @@ async def test_add_span_to_dataset(
         query=mutation,
         variables={
             "datasetId": str(dataset_id),
-            "spanIds": [str(GlobalID(type_name="Span", node_id=str(span.id))) for span in spans],
+            "spanIds": [
+                str(GlobalID(type_name="Span", node_id=f"{span.project_rowid}:{span.id}"))
+                for span in spans
+            ],
         },
     )
     assert not response.errors
@@ -840,6 +843,8 @@ async def spans(db: DbSessionFactory) -> list[models.Span]:
         )
         assert span is not None
         spans.append(span)
+        for s in spans:
+            s.project_rowid = project_row_id  # transient, for building compound GlobalIDs below
     return spans
 
 

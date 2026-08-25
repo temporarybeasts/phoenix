@@ -391,7 +391,7 @@ async def test_delete_span_with_global_id(
     hierarchy = span_hierarchy
 
     # Use GlobalID instead of OpenTelemetry span_id
-    child1_global_id = str(GlobalID("Span", str(hierarchy["child1"].id)))
+    child1_global_id = str(GlobalID("Span", f"{hierarchy['project'].id}:{hierarchy['child1'].id}"))
 
     # Delete using GlobalID
     response = await httpx_client.delete(f"v1/spans/{child1_global_id}")

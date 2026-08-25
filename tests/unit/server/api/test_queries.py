@@ -2907,7 +2907,10 @@ async def test_available_agent_skills_code_evaluator_context(
 async def test_node_with_noninteger_payload_returns_bad_request(
     gql_client: AsyncGraphQLClient,
 ) -> None:
-    bad_id = str(GlobalID("Trace", "abc"))
+    # "Project" (not "Trace") -- since Stage 4b-1, Trace/Span/ProjectSession
+    # take a separate compound-id dispatch branch that raises NotFound (404)
+    # on a malformed id, not the generic BadRequest (400) this test covers.
+    bad_id = str(GlobalID("Project", "abc"))
     response = await gql_client.execute(
         query="query ($id: ID!) { node(id: $id) { __typename } }",
         variables={"id": bad_id},

@@ -29,8 +29,12 @@ class DatasetExampleSpansDataLoader(DataLoader[Key, Result]):
                     .join(models.Span, models.DatasetExample.span_rowid == models.Span.id)
                     .where(models.DatasetExample.id.in_(example_ids))
                     .options(
+                        # project_rowid is loaded alongside trace_id (not
+                        # previously needed here) so the caller can
+                        # construct a project-aware Span GraphQL type --
+                        # see Stage 4b-1's compound-GlobalID plan.
                         joinedload(models.Span.trace, innerjoin=True).load_only(
-                            models.Trace.trace_id
+                            models.Trace.trace_id, models.Trace.project_rowid
                         )
                     )
                 )

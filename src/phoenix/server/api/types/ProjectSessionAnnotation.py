@@ -22,6 +22,9 @@ if TYPE_CHECKING:
 @strawberry.type
 class ProjectSessionAnnotation(Node, Annotation):
     id: NodeID[int]
+    # Schema-per-project (Stage 4b-1): see the matching comment on
+    # phoenix.server.api.types.SpanAnnotation.SpanAnnotation.
+    project_id: strawberry.Private[int]
     db_record: strawberry.Private[Optional[models.ProjectSessionAnnotation]] = None
 
     def __post_init__(self) -> None:
@@ -37,7 +40,7 @@ class ProjectSessionAnnotation(Node, Annotation):
             val = self.db_record.name
         else:
             val = await info.context.data_loaders.project_session_annotation_fields.load(
-                (self.id, models.ProjectSessionAnnotation.name),
+                (self.id, models.ProjectSessionAnnotation.name, self.project_id),
             )
         return val
 
@@ -50,7 +53,7 @@ class ProjectSessionAnnotation(Node, Annotation):
             val = self.db_record.annotator_kind
         else:
             val = await info.context.data_loaders.project_session_annotation_fields.load(
-                (self.id, models.ProjectSessionAnnotation.annotator_kind),
+                (self.id, models.ProjectSessionAnnotation.annotator_kind, self.project_id),
             )
         return AnnotatorKind(val)
 
@@ -65,7 +68,7 @@ class ProjectSessionAnnotation(Node, Annotation):
             val = self.db_record.label
         else:
             val = await info.context.data_loaders.project_session_annotation_fields.load(
-                (self.id, models.ProjectSessionAnnotation.label),
+                (self.id, models.ProjectSessionAnnotation.label, self.project_id),
             )
         return val
 
@@ -78,7 +81,7 @@ class ProjectSessionAnnotation(Node, Annotation):
             val = self.db_record.score
         else:
             val = await info.context.data_loaders.project_session_annotation_fields.load(
-                (self.id, models.ProjectSessionAnnotation.score),
+                (self.id, models.ProjectSessionAnnotation.score, self.project_id),
             )
         return val if val is not None and isfinite(val) else None
 
@@ -93,7 +96,7 @@ class ProjectSessionAnnotation(Node, Annotation):
             val = self.db_record.explanation
         else:
             val = await info.context.data_loaders.project_session_annotation_fields.load(
-                (self.id, models.ProjectSessionAnnotation.explanation),
+                (self.id, models.ProjectSessionAnnotation.explanation, self.project_id),
             )
         return val
 
@@ -106,7 +109,7 @@ class ProjectSessionAnnotation(Node, Annotation):
             val = self.db_record.metadata_
         else:
             val = await info.context.data_loaders.project_session_annotation_fields.load(
-                (self.id, models.ProjectSessionAnnotation.metadata_),
+                (self.id, models.ProjectSessionAnnotation.metadata_, self.project_id),
             )
         return JSON(val)
 
@@ -119,7 +122,7 @@ class ProjectSessionAnnotation(Node, Annotation):
             val = self.db_record.identifier
         else:
             val = await info.context.data_loaders.project_session_annotation_fields.load(
-                (self.id, models.ProjectSessionAnnotation.identifier),
+                (self.id, models.ProjectSessionAnnotation.identifier, self.project_id),
             )
         return val
 
@@ -132,7 +135,7 @@ class ProjectSessionAnnotation(Node, Annotation):
             val = self.db_record.source
         else:
             val = await info.context.data_loaders.project_session_annotation_fields.load(
-                (self.id, models.ProjectSessionAnnotation.source),
+                (self.id, models.ProjectSessionAnnotation.source, self.project_id),
             )
         return AnnotationSource(val)
 
@@ -145,7 +148,7 @@ class ProjectSessionAnnotation(Node, Annotation):
             val = self.db_record.created_at
         else:
             val = await info.context.data_loaders.project_session_annotation_fields.load(
-                (self.id, models.ProjectSessionAnnotation.created_at),
+                (self.id, models.ProjectSessionAnnotation.created_at, self.project_id),
             )
         return val
 
@@ -158,7 +161,7 @@ class ProjectSessionAnnotation(Node, Annotation):
             val = self.db_record.updated_at
         else:
             val = await info.context.data_loaders.project_session_annotation_fields.load(
-                (self.id, models.ProjectSessionAnnotation.updated_at),
+                (self.id, models.ProjectSessionAnnotation.updated_at, self.project_id),
             )
         return val
 
@@ -174,10 +177,13 @@ class ProjectSessionAnnotation(Node, Annotation):
         else:
             project_session_id = (
                 await info.context.data_loaders.project_session_annotation_fields.load(
-                    (self.id, models.ProjectSessionAnnotation.project_session_id),
+                    (self.id, models.ProjectSessionAnnotation.project_session_id, self.project_id),
                 )
             )
-        return GlobalID(type_name=ProjectSession.__name__, node_id=str(project_session_id))
+        return GlobalID(
+            type_name=ProjectSession.__name__,
+            node_id=f"{self.project_id}:{project_session_id}",
+        )
 
     @strawberry.field(description="The project session associated with the annotation.")  # type: ignore
     async def project_session(
@@ -189,12 +195,12 @@ class ProjectSessionAnnotation(Node, Annotation):
         else:
             project_session_id = (
                 await info.context.data_loaders.project_session_annotation_fields.load(
-                    (self.id, models.ProjectSessionAnnotation.project_session_id),
+                    (self.id, models.ProjectSessionAnnotation.project_session_id, self.project_id),
                 )
             )
         from .ProjectSession import ProjectSession
 
-        return ProjectSession(id=project_session_id)
+        return ProjectSession(id=project_session_id, project_id=self.project_id)
 
     @strawberry.field(description="The user that produced the annotation.")  # type: ignore
     async def user(
@@ -205,7 +211,7 @@ class ProjectSessionAnnotation(Node, Annotation):
             user_id = self.db_record.user_id
         else:
             user_id = await info.context.data_loaders.project_session_annotation_fields.load(
-                (self.id, models.ProjectSessionAnnotation.user_id),
+                (self.id, models.ProjectSessionAnnotation.user_id, self.project_id),
             )
         if user_id is None:
             return None

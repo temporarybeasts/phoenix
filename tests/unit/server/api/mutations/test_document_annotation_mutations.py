@@ -77,7 +77,7 @@ class TestDocumentAnnotationMutations:
         db: DbSessionFactory,
         gql_client: AsyncGraphQLClient,
     ) -> None:
-        span_gid = str(GlobalID("Span", "1"))
+        span_gid = str(GlobalID("Span", "1:1"))  # single project/trace/span, both row ids are 1
 
         # === CREATE ===
 

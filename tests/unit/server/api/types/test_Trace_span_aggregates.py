@@ -26,7 +26,7 @@ def _exception_event(exception_type: str) -> dict[str, Any]:
 
 
 @pytest.fixture
-async def trace_with_mixed_spans(db: DbSessionFactory) -> int:
+async def trace_with_mixed_spans(db: DbSessionFactory) -> str:
     """A trace with a mix of span kinds and statuses:
 
     - 2 LLM (1 OK, 1 ERROR with ``ValueError``)
@@ -81,14 +81,15 @@ async def trace_with_mixed_spans(db: DbSessionFactory) -> int:
                 )
             )
         await session.commit()
-    return trace_rowid
+    # Stage 4b-1: Trace's node id is now compound "<project_id>:<row_id>".
+    return f"{project_id}:{trace_rowid}"
 
 
 async def test_span_counts_by_kind(
-    trace_with_mixed_spans: int,
+    trace_with_mixed_spans: str,
     gql_client: AsyncGraphQLClient,
 ) -> None:
-    trace_gid = str(GlobalID(Trace.__name__, str(trace_with_mixed_spans)))
+    trace_gid = str(GlobalID(Trace.__name__, trace_with_mixed_spans))
     query = """
         query ($traceId: ID!) {
             node(id: $traceId) {
@@ -113,10 +114,10 @@ async def test_span_counts_by_kind(
 
 
 async def test_error_count(
-    trace_with_mixed_spans: int,
+    trace_with_mixed_spans: str,
     gql_client: AsyncGraphQLClient,
 ) -> None:
-    trace_gid = str(GlobalID(Trace.__name__, str(trace_with_mixed_spans)))
+    trace_gid = str(GlobalID(Trace.__name__, trace_with_mixed_spans))
     query = """
         query ($traceId: ID!) {
             node(id: $traceId) {
@@ -133,10 +134,10 @@ async def test_error_count(
 
 
 async def test_errors_by_type(
-    trace_with_mixed_spans: int,
+    trace_with_mixed_spans: str,
     gql_client: AsyncGraphQLClient,
 ) -> None:
-    trace_gid = str(GlobalID(Trace.__name__, str(trace_with_mixed_spans)))
+    trace_gid = str(GlobalID(Trace.__name__, trace_with_mixed_spans))
     query = """
         query ($traceId: ID!) {
             node(id: $traceId) {
@@ -161,10 +162,10 @@ async def test_errors_by_type(
 
 
 async def test_spans_filter_condition_narrows_results(
-    trace_with_mixed_spans: int,
+    trace_with_mixed_spans: str,
     gql_client: AsyncGraphQLClient,
 ) -> None:
-    trace_gid = str(GlobalID(Trace.__name__, str(trace_with_mixed_spans)))
+    trace_gid = str(GlobalID(Trace.__name__, trace_with_mixed_spans))
     query = """
         query ($traceId: ID!, $first: Int!, $filter: String) {
             node(id: $traceId) {
@@ -188,10 +189,10 @@ async def test_spans_filter_condition_narrows_results(
 
 
 async def test_spans_filter_condition_on_status_code(
-    trace_with_mixed_spans: int,
+    trace_with_mixed_spans: str,
     gql_client: AsyncGraphQLClient,
 ) -> None:
-    trace_gid = str(GlobalID(Trace.__name__, str(trace_with_mixed_spans)))
+    trace_gid = str(GlobalID(Trace.__name__, trace_with_mixed_spans))
     query = """
         query ($traceId: ID!, $first: Int!, $filter: String) {
             node(id: $traceId) {
@@ -219,12 +220,12 @@ async def test_spans_filter_condition_on_status_code(
 
 
 async def test_spans_invalid_filter_condition_raises(
-    trace_with_mixed_spans: int,
+    trace_with_mixed_spans: str,
     monkeypatch: pytest.MonkeyPatch,
     gql_client: AsyncGraphQLClient,
 ) -> None:
     monkeypatch.setenv("PHOENIX_MASK_INTERNAL_SERVER_ERRORS", "false")
-    trace_gid = str(GlobalID(Trace.__name__, str(trace_with_mixed_spans)))
+    trace_gid = str(GlobalID(Trace.__name__, trace_with_mixed_spans))
     query = """
         query ($traceId: ID!, $first: Int!, $filter: String) {
             node(id: $traceId) {
@@ -249,7 +250,7 @@ async def test_spans_invalid_filter_condition_raises(
 
 
 @pytest.fixture
-async def trace_with_non_canonical_kinds(db: DbSessionFactory) -> int:
+async def trace_with_non_canonical_kinds(db: DbSessionFactory) -> str:
     """A trace with two spans whose ``span_kind`` values both collapse to
     ``SpanKind.unknown`` via the enum's ``_missing_`` hook.
 
@@ -300,17 +301,18 @@ async def trace_with_non_canonical_kinds(db: DbSessionFactory) -> int:
                 )
             )
         await session.commit()
-    return trace_rowid
+    # Stage 4b-1: Trace's node id is now compound "<project_id>:<row_id>".
+    return f"{project_id}:{trace_rowid}"
 
 
 async def test_span_counts_by_kind_dedupes_non_canonical(
-    trace_with_non_canonical_kinds: int,
+    trace_with_non_canonical_kinds: str,
     gql_client: AsyncGraphQLClient,
 ) -> None:
     """Two DB rows that both collapse to ``SpanKind.unknown`` must produce a
     single ``unknown`` bucket summing both counts, not two separate entries.
     """
-    trace_gid = str(GlobalID(Trace.__name__, str(trace_with_non_canonical_kinds)))
+    trace_gid = str(GlobalID(Trace.__name__, trace_with_non_canonical_kinds))
     query = """
         query ($traceId: ID!) {
             node(id: $traceId) {
@@ -327,7 +329,7 @@ async def test_span_counts_by_kind_dedupes_non_canonical(
 
 
 @pytest.fixture
-async def trace_with_hierarchy(db: DbSessionFactory) -> int:
+async def trace_with_hierarchy(db: DbSessionFactory) -> str:
     """A trace with parent/child structure so root-span filtering is meaningful.
 
     - ``s_root_llm_ok``: LLM, no parent (root), OK
@@ -381,11 +383,12 @@ async def trace_with_hierarchy(db: DbSessionFactory) -> int:
                 )
             )
         await session.commit()
-    return trace_rowid
+    # Stage 4b-1: Trace's node id is now compound "<project_id>:<row_id>".
+    return f"{project_id}:{trace_rowid}"
 
 
 async def test_spans_filter_with_root_spans_only(
-    trace_with_hierarchy: int,
+    trace_with_hierarchy: str,
     gql_client: AsyncGraphQLClient,
 ) -> None:
     """Filter must apply to the candidate set before root-span narrowing.
@@ -394,7 +397,7 @@ async def test_spans_filter_with_root_spans_only(
     the LLM root span — the LLM child should be excluded by the root
     narrowing, and the TOOL roots should be excluded by the kind filter.
     """
-    trace_gid = str(GlobalID(Trace.__name__, str(trace_with_hierarchy)))
+    trace_gid = str(GlobalID(Trace.__name__, trace_with_hierarchy))
     query = """
         query ($traceId: ID!, $first: Int!, $filter: String) {
             node(id: $traceId) {
@@ -417,7 +420,7 @@ async def test_spans_filter_with_root_spans_only(
 
 
 async def test_spans_filter_paginates(
-    trace_with_hierarchy: int,
+    trace_with_hierarchy: str,
     gql_client: AsyncGraphQLClient,
 ) -> None:
     """Filter must compose with forward-cursor pagination.
@@ -426,7 +429,7 @@ async def test_spans_filter_paginates(
     ``after`` cursor must return all three across two pages without skipping
     or duplicating.
     """
-    trace_gid = str(GlobalID(Trace.__name__, str(trace_with_hierarchy)))
+    trace_gid = str(GlobalID(Trace.__name__, trace_with_hierarchy))
     query = """
         query ($traceId: ID!, $first: Int!, $after: String, $filter: String) {
             node(id: $traceId) {

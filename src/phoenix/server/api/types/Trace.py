@@ -11,7 +11,7 @@ from aioitertools.itertools import islice
 from openinference.semconv.trace import SpanAttributes
 from sqlalchemy import desc, or_, select
 from strawberry import ID, UNSET, lazy
-from strawberry.relay import Connection, GlobalID, Node, NodeID
+from strawberry.relay import Connection, GlobalID, Node
 from strawberry.types import Info
 from typing_extensions import TypeAlias
 
@@ -67,12 +67,24 @@ class SpanErrorTypeCount:
 
 @strawberry.type
 class Trace(Node):
-    id: NodeID[TraceRowId]
+    # Schema-per-project (Stage 4b-1): row ids are no longer globally
+    # unique once each project has its own schema, so this type encodes a
+    # compound GlobalID ("<project_id>:<row_id>") instead of using the
+    # default NodeID mechanism -- mirrors the existing
+    # ExperimentRepeatedRunGroup precedent. `id`/`project_id` stay
+    # strawberry.Private (not exposed on the schema, same as before); every
+    # existing `self.id` reference elsewhere in this file is unaffected.
+    id: strawberry.Private[TraceRowId]
+    project_id: strawberry.Private[ProjectRowId]
     db_record: strawberry.Private[Optional[models.Trace]] = None
 
     def __post_init__(self) -> None:
         if self.db_record and self.id != self.db_record.id:
             raise ValueError("Trace ID mismatch")
+
+    @classmethod
+    def resolve_id(cls, root: "Trace", *, info: Info) -> str:
+        return f"{root.project_id}:{root.id}"
 
     @strawberry.field
     async def trace_id(
@@ -83,7 +95,7 @@ class Trace(Node):
             trace_id = self.db_record.trace_id
         else:
             trace_id = await info.context.data_loaders.trace_fields.load(
-                (self.id, models.Trace.trace_id),
+                (self.id, models.Trace.trace_id, self.project_id),
             )
         return ID(trace_id)
 
@@ -96,7 +108,7 @@ class Trace(Node):
             start_time = self.db_record.start_time
         else:
             start_time = await info.context.data_loaders.trace_fields.load(
-                (self.id, models.Trace.start_time),
+                (self.id, models.Trace.start_time, self.project_id),
             )
         return start_time
 
@@ -109,7 +121,7 @@ class Trace(Node):
             end_time = self.db_record.end_time
         else:
             end_time = await info.context.data_loaders.trace_fields.load(
-                (self.id, models.Trace.end_time),
+                (self.id, models.Trace.end_time, self.project_id),
             )
         return end_time
 
@@ -122,7 +134,7 @@ class Trace(Node):
             latency_ms = self.db_record.latency_ms
         else:
             latency_ms = await info.context.data_loaders.trace_fields.load(
-                (self.id, models.Trace.latency_ms),
+                (self.id, models.Trace.latency_ms, self.project_id),
             )
         return latency_ms
 
@@ -131,30 +143,23 @@ class Trace(Node):
         self,
         info: Info[Context, None],
     ) -> Annotated["Project", strawberry.lazy(".Project")]:
-        if self.db_record:
-            project_rowid = self.db_record.project_rowid
-        else:
-            project_rowid = await info.context.data_loaders.trace_fields.load(
-                (self.id, models.Trace.project_rowid),
-            )
         from phoenix.server.api.types.Project import Project
 
-        return Project(id=project_rowid)
+        return Project(id=self.project_id)
 
-    @strawberry.field
-    async def project_id(
+    # Named `project_global_id` (not `project_id`) to avoid colliding with
+    # the private `project_id: strawberry.Private[ProjectRowId]` field above
+    # -- Strawberry drops a field from the generated `__init__` when a
+    # resolver method shares its name. The GraphQL field name is preserved
+    # as `projectId` via the explicit `name=` below.
+    @strawberry.field(name="projectId")
+    async def project_global_id(
         self,
         info: Info[Context, None],
     ) -> GlobalID:
-        if self.db_record:
-            project_rowid = self.db_record.project_rowid
-        else:
-            project_rowid = await info.context.data_loaders.trace_fields.load(
-                (self.id, models.Trace.project_rowid),
-            )
         from phoenix.server.api.types.Project import Project
 
-        return GlobalID(type_name=Project.__name__, node_id=str(project_rowid))
+        return GlobalID(type_name=Project.__name__, node_id=str(self.project_id))
 
     @strawberry.field
     async def project_session_id(
@@ -165,13 +170,17 @@ class Trace(Node):
             project_session_rowid = self.db_record.project_session_rowid
         else:
             project_session_rowid = await info.context.data_loaders.trace_fields.load(
-                (self.id, models.Trace.project_session_rowid),
+                (self.id, models.Trace.project_session_rowid, self.project_id),
             )
         if project_session_rowid is None:
             return None
         from phoenix.server.api.types.ProjectSession import ProjectSession
 
-        return GlobalID(type_name=ProjectSession.__name__, node_id=str(project_session_rowid))
+        # The session belongs to the same project as this trace.
+        return GlobalID(
+            type_name=ProjectSession.__name__,
+            node_id=f"{self.project_id}:{project_session_rowid}",
+        )
 
     @strawberry.field
     async def session(
@@ -182,7 +191,7 @@ class Trace(Node):
             project_session_rowid = self.db_record.project_session_rowid
         else:
             project_session_rowid = await info.context.data_loaders.trace_fields.load(
-                (self.id, models.Trace.project_session_rowid),
+                (self.id, models.Trace.project_session_rowid, self.project_id),
             )
         if project_session_rowid is None:
             return None
@@ -194,7 +203,9 @@ class Trace(Node):
             return None
         from .ProjectSession import ProjectSession
 
-        return ProjectSession(id=project_session.id, db_record=project_session)
+        return ProjectSession(
+            id=project_session.id, project_id=self.project_id, db_record=project_session
+        )
 
     @strawberry.field
     async def root_span(
@@ -204,7 +215,7 @@ class Trace(Node):
         span_rowid = await info.context.data_loaders.trace_root_spans.load(self.id)
         if span_rowid is None:
             return None
-        return Span(id=span_rowid)
+        return Span(id=span_rowid, project_id=self.project_id)
 
     @strawberry.field(
         description='The first non-null "user.id" span attribute in the trace, '
@@ -369,7 +380,7 @@ class Trace(Node):
             span_rowids = await session.stream_scalars(stmt)
             async for span_rowid in islice(span_rowids, limit):
                 cursor = Cursor(rowid=span_rowid)
-                cursors_and_nodes.append((cursor, Span(id=span_rowid)))
+                cursors_and_nodes.append((cursor, Span(id=span_rowid, project_id=self.project_id)))
             has_next_page = True
             try:
                 await span_rowids.__anext__()
@@ -404,7 +415,8 @@ class Trace(Node):
             reverse=sort_descending,
         )
         return [
-            TraceAnnotation(id=annotation.id, db_record=annotation) for annotation in annotations
+            TraceAnnotation(id=annotation.id, project_id=self.project_id, db_record=annotation)
+            for annotation in annotations
         ]
 
     @strawberry.field(description="Summarizes each annotation (by name) associated with the trace")  # type: ignore

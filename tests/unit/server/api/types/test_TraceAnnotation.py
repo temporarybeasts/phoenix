@@ -62,7 +62,7 @@ async def test_annotating_a_trace(
     db: DbSessionFactory,
     project_with_a_single_trace_and_span: Any,
 ) -> None:
-    trace_gid = GlobalID("Trace", "1")
+    trace_gid = GlobalID("Trace", "1:1")  # single project/trace/span, both row ids are 1
     response = await gql_client.execute(
         query="""
             mutation AddTraceAnnotation($input: [CreateTraceAnnotationInput!]!) {
@@ -207,7 +207,10 @@ async def test_trace_annotations_sort_uses_id_as_tiebreaker(
     project_with_a_single_trace_and_span: Any,
 ) -> None:
     async with db() as session:
-        trace_id = await session.scalar(select(models.Trace.id))
+        trace_row = (
+            await session.execute(select(models.Trace.id, models.Trace.project_rowid))
+        ).one()
+        trace_id, trace_project_id = trace_row
         assert trace_id is not None
         created_at = datetime.fromisoformat("2021-01-01T00:00:00.000+00:00")
         session.add_all(
@@ -255,7 +258,7 @@ async def test_trace_annotations_sort_uses_id_as_tiebreaker(
                 }
             }
         """,
-        variables={"id": str(GlobalID("Trace", str(trace_id)))},
+        variables={"id": str(GlobalID("Trace", f"{trace_project_id}:{trace_id}"))},
     )
     assert not response.errors
     assert response.data is not None

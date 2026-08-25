@@ -313,10 +313,11 @@ def db(
 ) -> DbSessionFactory:
     if dialect == "sqlite":
         conn = request.getfixturevalue("_sqlite_test_conn")
-        return DbSessionFactory(db=_serialized(_db(conn)), dialect=dialect)
+        engine = request.getfixturevalue("sqlite_engine")
+        return DbSessionFactory(db=_serialized(_db(conn)), dialect=dialect, engine=engine)
     elif dialect == "postgresql":
         engine = request.getfixturevalue("postgresql_engine")
-        return DbSessionFactory(db=_db(engine), dialect=dialect)
+        return DbSessionFactory(db=_db(engine), dialect=dialect, engine=engine)
     else:
         raise ValueError(f"Unknown db fixture: {dialect}")
 

@@ -1,6 +1,7 @@
 from typing import Any, Optional, cast
 
 import strawberry
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError as PostgreSQLIntegrityError
 from sqlean.dbapi2 import IntegrityError as SQLiteIntegrityError  # type: ignore[import-untyped]
 from starlette.requests import Request
@@ -18,7 +19,10 @@ from phoenix.server.api.input_types.CreateProjectSessionAnnotationInput import (
 from phoenix.server.api.input_types.UpdateAnnotationInput import UpdateAnnotationInput
 from phoenix.server.api.queries import Query
 from phoenix.server.api.types.AnnotationSource import AnnotationSource
-from phoenix.server.api.types.node import from_global_id_with_expected_type
+from phoenix.server.api.types.node import (
+    from_global_id_with_expected_type,
+    parse_project_scoped_node_id,
+)
 from phoenix.server.api.types.ProjectSessionAnnotation import ProjectSessionAnnotation
 from phoenix.server.bearer_auth import PhoenixUser
 from phoenix.server.dml_event import (
@@ -45,9 +49,12 @@ class ProjectSessionAnnotationMutationMixin:
             user_id = int(user.identity)
 
         try:
-            project_session_id = from_global_id_with_expected_type(
-                input.project_session_id, "ProjectSession"
-            )
+            if input.project_session_id.type_name != "ProjectSession":
+                raise ValueError("not a ProjectSession global id")
+            # ProjectSession's node id is compound "<project_id>:<row_id>"
+            # (Stage 4b-1); the client-supplied project_id is discarded here
+            # -- the authoritative project_id is looked up from the DB below.
+            _, project_session_id = parse_project_scoped_node_id(input.project_session_id.node_id)
         except ValueError:
             raise BadRequest(f"Invalid session ID: {input.project_session_id}")
 
@@ -59,6 +66,13 @@ class ProjectSessionAnnotationMutationMixin:
 
         try:
             async with info.context.db() as session:
+                session_project_id = await session.scalar(
+                    select(models.ProjectSession.project_id).where(
+                        models.ProjectSession.id == project_session_id
+                    )
+                )
+                if session_project_id is None:
+                    raise NotFound(f"Could not find session with ID: {input.project_session_id}")
                 anno = models.ProjectSessionAnnotation(
                     project_session_id=project_session_id,
                     name=input.name,
@@ -78,7 +92,9 @@ class ProjectSessionAnnotationMutationMixin:
         info.context.event_queue.put(ProjectSessionAnnotationInsertEvent((anno.id,)))
 
         return ProjectSessionAnnotationMutationPayload(
-            project_session_annotation=ProjectSessionAnnotation(id=anno.id, db_record=anno),
+            project_session_annotation=ProjectSessionAnnotation(
+                id=anno.id, project_id=session_project_id, db_record=anno
+            ),
             query=Query(),
         )
 
@@ -117,9 +133,17 @@ class ProjectSessionAnnotationMutationMixin:
             except (PostgreSQLIntegrityError, SQLiteIntegrityError) as e:
                 raise Conflict(f"Error updating annotation: {e}")
 
+            session_project_id = await session.scalar(
+                select(models.ProjectSession.project_id).where(
+                    models.ProjectSession.id == anno.project_session_id
+                )
+            )
+
         info.context.event_queue.put(ProjectSessionAnnotationInsertEvent((anno.id,)))
         return ProjectSessionAnnotationMutationPayload(
-            project_session_annotation=ProjectSessionAnnotation(id=anno.id, db_record=anno),
+            project_session_annotation=ProjectSessionAnnotation(
+                id=anno.id, project_id=session_project_id, db_record=anno
+            ),
             query=Query(),
         )
 
@@ -149,9 +173,17 @@ class ProjectSessionAnnotationMutationMixin:
                     "the current user is not an admin."
                 )
 
+            session_project_id = await session.scalar(
+                select(models.ProjectSession.project_id).where(
+                    models.ProjectSession.id == anno.project_session_id
+                )
+            )
+
             await session.delete(anno)
 
-        deleted_gql_annotation = ProjectSessionAnnotation(id=anno.id, db_record=anno)
+        deleted_gql_annotation = ProjectSessionAnnotation(
+            id=anno.id, project_id=session_project_id, db_record=anno
+        )
         info.context.event_queue.put(ProjectSessionAnnotationDeleteEvent((id_,)))
         return ProjectSessionAnnotationMutationPayload(
             project_session_annotation=deleted_gql_annotation, query=Query()

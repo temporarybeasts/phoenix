@@ -25,7 +25,10 @@ from phoenix.server.api.helpers.annotations import get_note_identifier
 from phoenix.server.api.routers.utils import df_to_bytes
 from phoenix.server.api.routers.v1.annotations import SpanAnnotationData
 from phoenix.server.api.routers.v1.validators import validate_enum_filter
-from phoenix.server.api.types.node import from_global_id_with_expected_type
+from phoenix.server.api.types.node import (
+    from_global_id_with_expected_type,
+    parse_project_scoped_node_id,
+)
 from phoenix.server.authorization import (
     is_not_locked,
     prevent_access_in_read_only_mode,
@@ -828,7 +831,10 @@ async def span_search_otlpv1(
 
     if cursor:
         try:
-            cursor_rowid = int(GlobalID.from_id(cursor).node_id)
+            # Span's node id is compound "<project_id>:<row_id>" (Stage
+            # 4b-1); only the row id is needed since this endpoint is
+            # already scoped to one project.
+            _, cursor_rowid = parse_project_scoped_node_id(GlobalID.from_id(cursor).node_id)
             stmt = stmt.where(models.Span.id <= cursor_rowid)
         except Exception:
             raise HTTPException(status_code=422, detail="Invalid cursor")
@@ -845,7 +851,7 @@ async def span_search_otlpv1(
     if len(rows) == limit + 1:
         *rows, extra = rows  # extra is first item of next page
         span_extra, _ = extra
-        next_cursor = str(GlobalID("Span", str(span_extra.id)))
+        next_cursor = str(GlobalID("Span", f"{project_id}:{span_extra.id}"))
 
     # Convert ORM rows -> OTLP-style spans
     result_spans: list[OtlpSpan] = []
@@ -1024,7 +1030,8 @@ async def span_search(
 
     if cursor:
         try:
-            cursor_rowid = int(GlobalID.from_id(cursor).node_id)
+            # Same compound-id rationale as the OTLP spans endpoint above.
+            _, cursor_rowid = parse_project_scoped_node_id(GlobalID.from_id(cursor).node_id)
         except Exception:
             raise HTTPException(status_code=422, detail="Invalid cursor")
         stmt = stmt.where(models.Span.id <= cursor_rowid)
@@ -1041,7 +1048,7 @@ async def span_search(
     if len(rows) == limit + 1:
         *rows, extra = rows  # extra is first item of next page
         span_extra, _ = extra
-        next_cursor = str(GlobalID("Span", str(span_extra.id)))
+        next_cursor = str(GlobalID("Span", f"{project_id}:{span_extra.id}"))
 
     # Convert ORM rows -> Phoenix spans
     result_spans: list[Span] = []
@@ -1094,7 +1101,7 @@ async def span_search(
 
         result_spans.append(
             Span(
-                id=str(GlobalID("Span", str(span_orm.id))),
+                id=str(GlobalID("Span", f"{project_id}:{span_orm.id}")),
                 name=span_orm.name or "",
                 context=SpanContext(
                     trace_id=span_trace_id,
@@ -1550,10 +1557,12 @@ async def delete_span(
     async with request.app.state.db() as session:
         # Determine the predicate for deletion based on identifier type
         try:
-            span_rowid = from_global_id_with_expected_type(
-                GlobalID.from_id(span_identifier),
-                "Span",
-            )
+            global_id = GlobalID.from_id(span_identifier)
+            if global_id.type_name != "Span":
+                raise ValueError("not a Span global id")
+            # Span's node id is compound "<project_id>:<row_id>" (Stage
+            # 4b-1); only the row id is needed for a delete-by-rowid.
+            _, span_rowid = parse_project_scoped_node_id(global_id.node_id)
             predicate = models.Span.id == span_rowid
             error_detail = f"Span with relay ID '{span_identifier}' not found"
         except Exception:

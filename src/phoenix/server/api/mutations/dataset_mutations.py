@@ -39,12 +39,25 @@ from phoenix.server.api.input_types.PatchDatasetExamplesInput import (
 from phoenix.server.api.input_types.PatchDatasetInput import PatchDatasetInput
 from phoenix.server.api.types.Dataset import Dataset
 from phoenix.server.api.types.DatasetExample import DatasetExample
-from phoenix.server.api.types.node import from_global_id_with_expected_type
+from phoenix.server.api.types.node import (
+    from_global_id_with_expected_type,
+    parse_project_scoped_node_id,
+)
 from phoenix.server.api.types.Span import Span
 from phoenix.server.api.utils import delete_projects, delete_traces
 from phoenix.server.dml_event import DatasetDeleteEvent, DatasetInsertEvent
 
 _MAX_REPORTED_EXTERNAL_ID_CONFLICTS = 10
+
+
+def _span_rowid(global_id: GlobalID) -> int:
+    # Span's node id is compound "<project_id>:<row_id>" (Stage 4b-1); the
+    # client-supplied project_id is discarded -- these mutations only ever
+    # use the span rowid as a bare DB key.
+    if global_id.type_name != Span.__name__:
+        raise ValueError(f"Not a Span global id: {global_id}")
+    _, row_id = parse_project_scoped_node_id(global_id.node_id)
+    return row_id
 
 
 @strawberry.type
@@ -129,10 +142,7 @@ class DatasetMutationMixin:
         dataset_rowid = from_global_id_with_expected_type(
             global_id=dataset_id, expected_type_name=Dataset.__name__
         )
-        span_rowids = {
-            from_global_id_with_expected_type(global_id=span_id, expected_type_name=Span.__name__)
-            for span_id in set(span_ids)
-        }
+        span_rowids = {_span_rowid(span_id) for span_id in set(span_ids)}
         async with info.context.db() as session:
             if (
                 dataset := await session.scalar(
@@ -239,10 +249,7 @@ class DatasetMutationMixin:
         dataset_id = input.dataset_id
         # Extract the span rowids from the input examples if they exist
         span_ids = [example.span_id for example in input.examples if example.span_id]
-        span_rowids = {
-            from_global_id_with_expected_type(global_id=span_id, expected_type_name=Span.__name__)
-            for span_id in set(span_ids)
-        }
+        span_rowids = {_span_rowid(span_id) for span_id in set(span_ids)}
         dataset_version_description = (
             input.dataset_version_description if input.dataset_version_description else None
         )
@@ -324,12 +331,7 @@ class DatasetMutationMixin:
             dataset_examples = [
                 DatasetExample(
                     dataset_id=dataset_rowid,
-                    span_rowid=from_global_id_with_expected_type(
-                        global_id=example.span_id,
-                        expected_type_name=Span.__name__,
-                    )
-                    if example.span_id
-                    else None,
+                    span_rowid=_span_rowid(example.span_id) if example.span_id else None,
                     external_id=example.external_id if example.external_id else None,
                 )
                 for example in input.examples
@@ -371,10 +373,7 @@ class DatasetMutationMixin:
             for dataset_example_rowid, example in zip(dataset_example_rowids, input.examples):
                 span_annotation = {}
                 if example.span_id:
-                    span_id = from_global_id_with_expected_type(
-                        global_id=example.span_id,
-                        expected_type_name=Span.__name__,
-                    )
+                    span_id = _span_rowid(example.span_id)
                     span_annotation = span_annotations_by_span.get(span_id, {})
                 dataset_example_revisions.append(
                     {

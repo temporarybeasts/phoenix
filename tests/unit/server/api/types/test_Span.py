@@ -13,7 +13,7 @@ from strawberry.relay import GlobalID
 from typing_extensions import TypeAlias
 
 from phoenix.db import models
-from phoenix.server.api.types.node import from_global_id_with_expected_type
+from phoenix.server.api.types.node import parse_project_scoped_node_id
 from phoenix.server.api.types.Project import Project
 from phoenix.server.api.types.Span import Span
 from phoenix.server.api.types.Trace import Trace
@@ -44,7 +44,7 @@ async def test_project_resolver_returns_correct_project(
         }
       }
     """
-    span_id = str(GlobalID(Span.__name__, str(1)))
+    span_id = str(GlobalID(Span.__name__, "1:1"))  # single project/trace/span, both row ids are 1
     response = await gql_client.execute(
         query=query,
         variables={"spanId": span_id},
@@ -74,7 +74,7 @@ async def test_querying_spans_contained_in_datasets(
         }
       }
     """
-    span_id = str(GlobalID(Span.__name__, str(1)))
+    span_id = str(GlobalID(Span.__name__, "1:1"))  # single project/trace/span, both row ids are 1
     response = await gql_client.execute(
         query=query,
         variables={
@@ -99,7 +99,7 @@ async def test_querying_spans_not_contained_in_datasets(
         }
       }
     """
-    span_id = str(GlobalID(Span.__name__, str(1)))
+    span_id = str(GlobalID(Span.__name__, "1:1"))  # single project/trace/span, both row ids are 1
     response = await gql_client.execute(
         query=query,
         variables={
@@ -217,7 +217,7 @@ async def test_span_fields(
     spans = [e["node"] for e in data["node"]["spans"]["edges"]]
     assert len(spans) == len(db_spans)
     for db_trace in db_traces.values():
-        trace_gid = str(GlobalID(Trace.__name__, str(db_trace.id)))
+        trace_gid = str(GlobalID(Trace.__name__, f"{db_project.id}:{db_trace.id}"))
         response = await gql_client.execute(
             query=query,
             variables={"traceId": trace_gid},
@@ -228,7 +228,7 @@ async def test_span_fields(
         spans.extend(e["node"] for e in data["node"]["spans"]["edges"])
     assert len(spans) == len(db_spans) * 2
     for db_span in db_spans.values():
-        id_ = str(GlobalID(Span.__name__, str(db_span.id)))
+        id_ = str(GlobalID(Span.__name__, f"{db_project.id}:{db_span.id}"))
         response = await gql_client.execute(
             query=query,
             variables={"id": id_},
@@ -239,9 +239,12 @@ async def test_span_fields(
         spans.append(data["node"])
     assert len(spans) == len(db_spans) * 3
     for span in spans:
-        span_rowid = from_global_id_with_expected_type(GlobalID.from_id(span["id"]), Span.__name__)
+        # Stage 4b-1: Span's node id is now compound "<project_id>:<row_id>",
+        # not a plain integer -- from_global_id_with_expected_type only
+        # handles the latter, so parse it with parse_project_scoped_node_id.
+        _, span_rowid = parse_project_scoped_node_id(GlobalID.from_id(span["id"]).node_id)
         db_span = db_spans[span_rowid]
-        assert span["id"] == str(GlobalID(Span.__name__, str(db_span.id)))
+        assert span["id"] == str(GlobalID(Span.__name__, f"{db_project.id}:{db_span.id}"))
         assert span["name"] == db_span.name
         assert span["statusCode"] == db_span.status_code
         assert span["statusMessage"] == db_span.status_message
@@ -303,11 +306,13 @@ async def test_span_fields(
             assert not span["numChildSpans"]
         if descendants := db_descendent_rowids.get(db_span.id):
             assert {e["node"]["id"] for e in span["descendants"]["edges"]} == {
-                str(GlobalID(Span.__name__, str(id_))) for id_ in descendants
+                str(GlobalID(Span.__name__, f"{db_project.id}:{id_}")) for id_ in descendants
             }
         else:
             assert not span["descendants"]["edges"]
-        assert span["trace"]["id"] == str(GlobalID(Trace.__name__, str(db_span.trace_rowid)))
+        assert span["trace"]["id"] == str(
+            GlobalID(Trace.__name__, f"{db_project.id}:{db_span.trace_rowid}")
+        )
         assert span["trace"]["numSpans"] == db_num_spans_per_trace[db_span.trace_rowid]
 
 
@@ -671,7 +676,7 @@ async def test_span_annotation_summaries(
         }}
       }}
     """
-    span_id = str(GlobalID(Span.__name__, str(1)))
+    span_id = str(GlobalID(Span.__name__, "1:1"))  # single project/trace/span, both row ids are 1
     response = await gql_client.execute(
         query,
         variables={"spanId": span_id},
@@ -897,8 +902,11 @@ async def spans_with_annotations(
 
 
 @pytest.fixture
-async def _span_with_invalid_mime_type(db: DbSessionFactory) -> int:
-    """A span whose stored input/output mime types are invalid ("plain/text")."""
+async def _span_with_invalid_mime_type(db: DbSessionFactory) -> tuple[int, int]:
+    """A span whose stored input/output mime types are invalid ("plain/text").
+
+    Returns (project_rowid, span_rowid).
+    """
     async with db() as session:
         project_rowid = await session.scalar(
             insert(models.Project).values(name=token_hex(8)).returning(models.Project.id)
@@ -936,13 +944,14 @@ async def _span_with_invalid_mime_type(db: DbSessionFactory) -> int:
             )
             .returning(models.Span.id)
         )
+    assert project_rowid is not None
     assert span_rowid is not None
-    return span_rowid
+    return project_rowid, span_rowid
 
 
 async def test_span_with_invalid_mime_type_does_not_crash(
     gql_client: AsyncGraphQLClient,
-    _span_with_invalid_mime_type: int,
+    _span_with_invalid_mime_type: tuple[int, int],
 ) -> None:
     """Regression for #14762: an invalid stored mime type must not crash the resolver."""
     query = """
@@ -955,7 +964,8 @@ async def test_span_with_invalid_mime_type_does_not_crash(
         }
       }
     """
-    span_id = str(GlobalID(Span.__name__, str(_span_with_invalid_mime_type)))
+    project_rowid, span_rowid = _span_with_invalid_mime_type
+    span_id = str(GlobalID(Span.__name__, f"{project_rowid}:{span_rowid}"))
     response = await gql_client.execute(query=query, variables={"spanId": span_id})
     assert not response.errors
     assert (data := response.data) is not None
@@ -991,7 +1001,7 @@ async def test_as_example_revision_with_annotations(
         }
       }
     """
-    span_id = str(GlobalID(Span.__name__, str(1)))
+    span_id = str(GlobalID(Span.__name__, "1:1"))  # single project/trace/span, both row ids are 1
     response = await gql_client.execute(
         query=query,
         variables={"spanId": span_id},

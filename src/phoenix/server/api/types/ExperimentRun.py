@@ -159,7 +159,7 @@ class ExperimentRun(Node):
             return None
         from .Trace import Trace
 
-        return Trace(id=trace.id, db_record=trace)
+        return Trace(id=trace.id, project_id=trace.project_rowid, db_record=trace)
 
     @strawberry.field
     async def example(

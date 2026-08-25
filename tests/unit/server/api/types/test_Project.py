@@ -2335,6 +2335,9 @@ class TestProject:
                             cumulative_llm_token_count_completion=0,
                         )
                     )
+                    # Transient (non-mapped) attribute -- see `_add_span` in
+                    # tests/unit/_helpers.py for why `_gid` needs this.
+                    spans[-1].project_rowid = projects[-1].id
             session.add_all(spans)
             await session.flush()
 
@@ -7082,7 +7085,7 @@ async def test_trace_resolves_by_otel_id_and_global_node_id(
         project = await _add_project(session)
         trace = await _add_trace(session, project)
     project_gid = str(GlobalID("Project", str(project.id)))
-    trace_gid = str(GlobalID("Trace", str(trace.id)))
+    trace_gid = str(GlobalID("Trace", f"{trace.project_rowid}:{trace.id}"))
     query = """
     query ($pid: ID!, $tid: ID!) {
       node(id: $pid) {
@@ -7119,7 +7122,10 @@ async def test_trace_with_unmatched_global_node_id_returns_null(
     async with db() as session:
         project = await _add_project(session)
     project_gid = str(GlobalID("Project", str(project.id)))
-    node_id_as_trace_id = str(GlobalID("Trace", "2003"))
+    # Well-formed compound id (Stage 4b-1), but no trace with this row id
+    # exists -- exercises the "valid GlobalID, nonexistent row" path rather
+    # than falling back to the malformed-id -> OTel-string-lookup path.
+    node_id_as_trace_id = str(GlobalID("Trace", f"{project.id}:2003"))
     response = await gql_client.execute(
         query="""
         query ($pid: ID!, $tid: ID!) {

@@ -183,7 +183,17 @@ class ExperimentRunAnnotation(Node):
             val = await info.context.data_loaders.experiment_run_annotation_fields.load(
                 (self.id, models.ExperimentRunAnnotation.trace_id),
             )
-        return None if val is None else GlobalID(type_name=Trace.__name__, node_id=val)
+        if val is None:
+            return None
+        # `val` is the OTel (string) trace_id, not a row id -- resolve the
+        # real row/project via the same lookup `trace` (below) uses, so the
+        # returned GlobalID is a genuine, resolvable "<project_id>:<row_id>"
+        # rather than embedding the opaque string directly (which was never
+        # actually resolvable through Query.node's int(node_id) parsing).
+        trace = await info.context.data_loaders.trace_by_trace_ids.load(val)
+        if trace is None:
+            return None
+        return GlobalID(type_name=Trace.__name__, node_id=f"{trace.project_rowid}:{trace.id}")
 
     @strawberry.field(description="The trace associated with the annotation.")  # type: ignore
     async def trace(
@@ -203,4 +213,4 @@ class ExperimentRunAnnotation(Node):
         dataloader = info.context.data_loaders.trace_by_trace_ids
         if (trace := await dataloader.load(trace_id)) is None:
             return None
-        return Trace(id=trace.id, db_record=trace)
+        return Trace(id=trace.id, project_id=trace.project_rowid, db_record=trace)

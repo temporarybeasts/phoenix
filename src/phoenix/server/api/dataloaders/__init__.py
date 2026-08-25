@@ -103,7 +103,7 @@ from .span_cost_summary_by_trace import SpanCostSummaryByTraceDataLoader
 from .span_dataset_examples import SpanDatasetExamplesDataLoader
 from .span_descendants import SpanDescendantsDataLoader
 from .span_projects import SpanProjectsDataLoader
-from .table_fields import TableFieldsDataLoader
+from .table_fields import ProjectScopedTableFieldsDataLoader, TableFieldsDataLoader
 from .token_counts import TokenCountCache, TokenCountDataLoader
 from .token_prices_by_model import TokenPricesByModelDataLoader
 from .trace_annotations_by_trace import TraceAnnotationsByTraceDataLoader
@@ -186,7 +186,7 @@ class DataLoaders:
     dataset_fields: TableFieldsDataLoader
     dataset_split_fields: TableFieldsDataLoader
     dataset_version_fields: TableFieldsDataLoader
-    document_annotation_fields: TableFieldsDataLoader
+    document_annotation_fields: ProjectScopedTableFieldsDataLoader
     document_evaluation_summaries: DocumentEvaluationSummaryDataLoader
     document_evaluations: DocumentEvaluationsDataLoader
     document_retrieval_metrics: DocumentRetrievalMetricsDataLoader
@@ -237,8 +237,8 @@ class DataLoaders:
     prompt_authors: "VersionAuthorsDataLoader[models.PromptVersion]"
     latest_prompt_version_ids: LatestPromptVersionIdDataLoader
     latest_code_evaluator_versions: LatestCodeEvaluatorVersionDataLoader
-    project_session_annotation_fields: TableFieldsDataLoader
-    project_session_fields: TableFieldsDataLoader
+    project_session_annotation_fields: ProjectScopedTableFieldsDataLoader
+    project_session_fields: ProjectScopedTableFieldsDataLoader
     record_counts: RecordCountDataLoader
     sandbox_configs_by_provider: SandboxConfigsByProviderDataLoader
     sandbox_provider: SandboxProviderDataLoader
@@ -252,11 +252,11 @@ class DataLoaders:
     session_token_usages: SessionTokenUsagesDataLoader
     session_trace_latency_ms_quantile: SessionTraceLatencyMsQuantileDataLoader
     session_user_ids: UserIdsDataLoader
-    span_annotation_fields: TableFieldsDataLoader
+    span_annotation_fields: ProjectScopedTableFieldsDataLoader
     span_annotations: SpanAnnotationsDataLoader
     span_by_id: SpanByIdDataLoader
     span_cost_by_span: SpanCostBySpanDataLoader
-    span_cost_detail_fields: TableFieldsDataLoader
+    span_cost_detail_fields: ProjectScopedTableFieldsDataLoader
     span_cost_detail_summary_entries_by_model_and_scope: (
         SpanCostDetailSummaryEntriesByModelAndScopeDataLoader
     )
@@ -266,7 +266,7 @@ class DataLoaders:
     span_cost_detail_summary_entries_by_span: SpanCostDetailSummaryEntriesBySpanDataLoader
     span_cost_detail_summary_entries_by_trace: SpanCostDetailSummaryEntriesByTraceDataLoader
     span_cost_details_by_span_cost: SpanCostDetailsBySpanCostDataLoader
-    span_cost_fields: TableFieldsDataLoader
+    span_cost_fields: ProjectScopedTableFieldsDataLoader
     span_cost_summary_by_experiment: SpanCostSummaryByExperimentDataLoader
     span_cost_summary_by_experiment_repeated_run_group: (
         SpanCostSummaryByExperimentRepeatedRunGroupDataLoader
@@ -278,16 +278,16 @@ class DataLoaders:
     span_cost_summary_by_trace: SpanCostSummaryByTraceDataLoader
     span_dataset_examples: SpanDatasetExamplesDataLoader
     span_descendants: SpanDescendantsDataLoader
-    span_fields: TableFieldsDataLoader
+    span_fields: ProjectScopedTableFieldsDataLoader
     span_projects: SpanProjectsDataLoader
     token_counts: TokenCountDataLoader
     token_prices_by_model: TokenPricesByModelDataLoader
-    trace_annotation_fields: TableFieldsDataLoader
+    trace_annotation_fields: ProjectScopedTableFieldsDataLoader
     trace_annotations_by_trace: TraceAnnotationsByTraceDataLoader
     trace_by_trace_ids: TraceByTraceIdsDataLoader
     trace_error_count: TraceErrorCountDataLoader
     trace_errors_by_type: TraceErrorsByTypeDataLoader
-    trace_fields: TableFieldsDataLoader
+    trace_fields: ProjectScopedTableFieldsDataLoader
     trace_retention_policy_id_by_project_id: TraceRetentionPolicyIdByProjectIdDataLoader
     trace_root_spans: TraceRootSpansDataLoader
     trace_span_counts_by_kind: TraceSpanCountsByKindDataLoader
@@ -348,7 +348,9 @@ def build_data_loaders(
                 cache_for_dataloaders.document_evaluation_summary if cache_for_dataloaders else None
             ),
         ),
-        document_annotation_fields=TableFieldsDataLoader(db, models.DocumentAnnotation),
+        document_annotation_fields=ProjectScopedTableFieldsDataLoader(
+            db, models.DocumentAnnotation
+        ),
         document_evaluations=DocumentEvaluationsDataLoader(db),
         document_retrieval_metrics=DocumentRetrievalMetricsDataLoader(db),
         evaluator_by_id=EvaluatorByIdDataLoader(db),
@@ -415,10 +417,10 @@ def build_data_loaders(
         ),
         latest_prompt_version_ids=LatestPromptVersionIdDataLoader(db),
         latest_code_evaluator_versions=LatestCodeEvaluatorVersionDataLoader(db),
-        project_session_annotation_fields=TableFieldsDataLoader(
+        project_session_annotation_fields=ProjectScopedTableFieldsDataLoader(
             db, models.ProjectSessionAnnotation
         ),
-        project_session_fields=TableFieldsDataLoader(db, models.ProjectSession),
+        project_session_fields=ProjectScopedTableFieldsDataLoader(db, models.ProjectSession),
         record_counts=RecordCountDataLoader(
             db,
             cache_map=cache_for_dataloaders.record_count if cache_for_dataloaders else None,
@@ -435,9 +437,9 @@ def build_data_loaders(
         session_token_usages=SessionTokenUsagesDataLoader(db),
         session_trace_latency_ms_quantile=SessionTraceLatencyMsQuantileDataLoader(db),
         session_user_ids=UserIdsDataLoader(db, "session"),
-        span_annotation_fields=TableFieldsDataLoader(db, models.SpanAnnotation),
+        span_annotation_fields=ProjectScopedTableFieldsDataLoader(db, models.SpanAnnotation),
         span_annotations=SpanAnnotationsDataLoader(db),
-        span_fields=TableFieldsDataLoader(db, models.Span),
+        span_fields=ProjectScopedTableFieldsDataLoader(db, models.Span),
         span_by_id=SpanByIdDataLoader(db),
         span_cost_by_span=SpanCostBySpanDataLoader(db),
         span_cost_detail_summary_entries_by_model_and_scope=SpanCostDetailSummaryEntriesByModelAndScopeDataLoader(
@@ -449,8 +451,8 @@ def build_data_loaders(
         span_cost_detail_summary_entries_by_span=SpanCostDetailSummaryEntriesBySpanDataLoader(db),
         span_cost_detail_summary_entries_by_trace=SpanCostDetailSummaryEntriesByTraceDataLoader(db),
         span_cost_details_by_span_cost=SpanCostDetailsBySpanCostDataLoader(db),
-        span_cost_detail_fields=TableFieldsDataLoader(db, models.SpanCostDetail),
-        span_cost_fields=TableFieldsDataLoader(db, models.SpanCost),
+        span_cost_detail_fields=ProjectScopedTableFieldsDataLoader(db, models.SpanCostDetail),
+        span_cost_fields=ProjectScopedTableFieldsDataLoader(db, models.SpanCost),
         span_cost_summary_by_experiment=SpanCostSummaryByExperimentDataLoader(db),
         span_cost_summary_by_experiment_repeated_run_group=SpanCostSummaryByExperimentRepeatedRunGroupDataLoader(
             db
@@ -471,12 +473,12 @@ def build_data_loaders(
             cache_map=cache_for_dataloaders.token_count if cache_for_dataloaders else None,
         ),
         token_prices_by_model=TokenPricesByModelDataLoader(db),
-        trace_annotation_fields=TableFieldsDataLoader(db, models.TraceAnnotation),
+        trace_annotation_fields=ProjectScopedTableFieldsDataLoader(db, models.TraceAnnotation),
         trace_annotations_by_trace=TraceAnnotationsByTraceDataLoader(db),
         trace_by_trace_ids=TraceByTraceIdsDataLoader(db),
         trace_error_count=TraceErrorCountDataLoader(db),
         trace_errors_by_type=TraceErrorsByTypeDataLoader(db),
-        trace_fields=TableFieldsDataLoader(db, models.Trace),
+        trace_fields=ProjectScopedTableFieldsDataLoader(db, models.Trace),
         trace_span_counts_by_kind=TraceSpanCountsByKindDataLoader(db),
         trace_retention_policy_id_by_project_id=TraceRetentionPolicyIdByProjectIdDataLoader(db),
         project_trace_retention_policy_fields=TableFieldsDataLoader(

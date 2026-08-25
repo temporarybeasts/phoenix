@@ -93,7 +93,7 @@ async def test_project_spans_trace_filter_condition_composes_with_span_filter(
     assert not response.errors
     assert response.data is not None
     assert response.data["node"]["spans"]["edges"] == [
-        {"node": {"id": str(GlobalID("Span", str(matching_span.id)))}}
+        {"node": {"id": str(GlobalID("Span", f"{matching_span.project_rowid}:{matching_span.id}"))}}
     ]
     listing_sql = next(
         " ".join(statement.lower().split())
@@ -167,6 +167,7 @@ async def test_project_trace_filter_uses_displayed_strict_root(
             start_time=start_time + timedelta(seconds=1),
         )
         strict_root_id = strict_root.id
+        strict_root_project_id = strict_root.project_rowid
 
     response = await gql_client.execute(
         query="""
@@ -190,7 +191,7 @@ async def test_project_trace_filter_uses_displayed_strict_root(
     assert not response.errors
     assert response.data is not None
     assert response.data["node"]["spans"]["edges"] == [
-        {"node": {"id": str(GlobalID("Span", str(strict_root_id)))}}
+        {"node": {"id": str(GlobalID("Span", f"{strict_root_project_id}:{strict_root_id}"))}}
     ]
 
 
@@ -238,7 +239,7 @@ async def test_project_spans_general_path_uses_displayed_strict_root(
     assert not response.errors
     assert response.data is not None
     assert response.data["node"]["spans"]["edges"] == [
-        {"node": {"id": str(GlobalID("Span", str(strict_root.id)))}}
+        {"node": {"id": str(GlobalID("Span", f"{strict_root.project_rowid}:{strict_root.id}"))}}
     ]
 
 
@@ -285,7 +286,11 @@ async def test_project_spans_general_path_keeps_one_representative_root_per_trac
     assert not response.errors
     assert response.data is not None
     assert response.data["node"]["spans"]["edges"] == [
-        {"node": {"id": str(GlobalID("Span", str(representative.id)))}}
+        {
+            "node": {
+                "id": str(GlobalID("Span", f"{representative.project_rowid}:{representative.id}"))
+            }
+        }
     ]
 
 
@@ -323,8 +328,8 @@ async def test_project_spans_general_path_keeps_orphan_with_foreign_parent_id_co
     assert not response.errors
     assert response.data is not None
     assert {edge["node"]["id"] for edge in response.data["node"]["spans"]["edges"]} == {
-        str(GlobalID("Span", str(orphan.id))),
-        str(GlobalID("Span", str(foreign_root.id))),
+        str(GlobalID("Span", f"{orphan.project_rowid}:{orphan.id}")),
+        str(GlobalID("Span", f"{foreign_root.project_rowid}:{foreign_root.id}")),
     }
 
 
@@ -376,7 +381,7 @@ async def test_project_trace_filter_preserves_trace_start_time_window(
     assert not response.errors
     assert response.data is not None
     assert response.data["node"]["spans"]["edges"] == [
-        {"node": {"id": str(GlobalID("Span", str(root.id)))}}
+        {"node": {"id": str(GlobalID("Span", f"{root.project_rowid}:{root.id}"))}}
     ]
 
 

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Generic, Optional, Protocol, TypeVar, final
 
 from cachetools import LRUCache
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from typing_extensions import Self
 
 from phoenix.auth import CanReadToken, ClaimSet, Token, TokenAttributes
@@ -34,10 +34,16 @@ class DbSessionFactory:
         db: Callable[[], AbstractAsyncContextManager[AsyncSession]],
         dialect: str,
         read_db: Optional[Callable[[], AbstractAsyncContextManager[AsyncSession]]] = None,
+        engine: Optional[AsyncEngine] = None,
     ):
         self._db = db
         self._read_db = read_db or db
         self.dialect = SupportedSQLDialect(dialect)
+        self.engine = engine
+        """The underlying AsyncEngine, when available. Used by schema-scoped
+        connection routing (see server/access/schema_provisioning.py), which
+        needs direct engine access rather than a session-factory closure.
+        """
         self.should_not_insert_or_update = False
         """An informational flag that allows different tasks to coordinate whether insert
         and update operations should be allowed. For example, this can be set to True when disk

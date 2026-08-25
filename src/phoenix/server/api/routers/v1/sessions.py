@@ -23,7 +23,7 @@ from phoenix.server.api.routers.v1.utils import (
     add_errors_to_responses,
     get_project_by_identifier,
 )
-from phoenix.server.api.types.node import from_global_id_with_expected_type
+from phoenix.server.api.types.node import parse_project_scoped_node_id
 from phoenix.server.api.types.Project import Project as ProjectNodeType
 from phoenix.server.api.types.ProjectSession import ProjectSession as ProjectSessionNodeType
 from phoenix.server.api.types.ProjectSessionAnnotation import (
@@ -53,7 +53,12 @@ def _parse_session_global_id(session_identifier: str) -> Optional[int]:
     """
     try:
         global_id = GlobalID.from_id(session_identifier)
-        return from_global_id_with_expected_type(global_id, _PROJECT_SESSION_NODE_TYPE_NAME)
+        if global_id.type_name != _PROJECT_SESSION_NODE_TYPE_NAME:
+            return None
+        # ProjectSession's node id is compound "<project_id>:<row_id>"
+        # (Stage 4b-1); only the row id is needed by this helper's callers.
+        _, row_id = parse_project_scoped_node_id(global_id.node_id)
+        return row_id
     except Exception:
         return None
 
@@ -170,7 +175,7 @@ async def _get_session_by_identifier(
 
 def _to_trace_data(trace: models.Trace) -> SessionTraceData:
     return SessionTraceData(
-        id=str(GlobalID(TraceNodeType.__name__, str(trace.id))),
+        id=str(GlobalID(TraceNodeType.__name__, f"{trace.project_rowid}:{trace.id}")),
         trace_id=trace.trace_id,
         start_time=trace.start_time,
         end_time=trace.end_time,
@@ -184,7 +189,12 @@ def _to_session_data(
 ) -> SessionData:
     prompt, completion = token_counts.get(project_session.id, (0, 0))
     return SessionData(
-        id=str(GlobalID(ProjectSessionNodeType.__name__, str(project_session.id))),
+        id=str(
+            GlobalID(
+                ProjectSessionNodeType.__name__,
+                f"{project_session.project_id}:{project_session.id}",
+            )
+        ),
         session_id=project_session.session_id,
         project_id=str(GlobalID(ProjectNodeType.__name__, str(project_session.project_id))),
         start_time=project_session.start_time,
@@ -374,11 +384,14 @@ async def list_project_sessions(
 
         if cursor:
             try:
-                cursor_id = GlobalID.from_id(cursor).node_id
+                # ProjectSession's node id is compound "<project_id>:<row_id>"
+                # (Stage 4b-1); only the row id is needed since this endpoint
+                # is already scoped to one project.
+                _, cursor_rowid = parse_project_scoped_node_id(GlobalID.from_id(cursor).node_id)
                 if order == "desc":
-                    sessions_stmt = sessions_stmt.filter(models.ProjectSession.id <= int(cursor_id))
+                    sessions_stmt = sessions_stmt.filter(models.ProjectSession.id <= cursor_rowid)
                 else:
-                    sessions_stmt = sessions_stmt.filter(models.ProjectSession.id >= int(cursor_id))
+                    sessions_stmt = sessions_stmt.filter(models.ProjectSession.id >= cursor_rowid)
             except ValueError:
                 raise HTTPException(
                     detail=f"Invalid cursor format: {cursor}",
@@ -394,7 +407,9 @@ async def list_project_sessions(
         next_cursor = None
         if len(sessions) == limit + 1:
             last_session = sessions[-1]
-            next_cursor = str(GlobalID(ProjectSessionNodeType.__name__, str(last_session.id)))
+            next_cursor = str(
+                GlobalID(ProjectSessionNodeType.__name__, f"{project.id}:{last_session.id}")
+            )
             sessions = sessions[:-1]
 
         session_ids = [s.id for s in sessions]

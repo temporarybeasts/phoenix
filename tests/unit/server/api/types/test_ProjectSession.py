@@ -33,10 +33,12 @@ class TestProjectSession:
         project_session: models.ProjectSession,
         httpx_client: httpx.AsyncClient,
     ) -> Any:
+        # Stage 4b-1: ProjectSession's node id is now compound
+        # "<project_id>:<row_id>"; project_id is a real column here.
         return await _node(
             field,
             ProjectSession.__name__,
-            project_session.id,
+            f"{project_session.project_id}:{project_session.id}",
             httpx_client,
         )
 
@@ -212,7 +214,8 @@ class TestProjectSession:
         traces = await self._node(field, project_session, httpx_client)
         assert traces["edges"]
         assert {(edge["node"]["id"], edge["node"]["traceId"]) for edge in traces["edges"]} == {
-            (str(GlobalID(Trace.__name__, str(trace.id))), trace.trace_id) for trace in _data.traces
+            (str(GlobalID(Trace.__name__, f"{trace.project_rowid}:{trace.id}")), trace.trace_id)
+            for trace in _data.traces
         }
 
     async def test_user_id(
@@ -404,7 +407,9 @@ async def test_project_session_traces_require_first(
         project_session = await _add_project_session(session, project)
         await _add_trace(session, project, project_session)
 
-    project_session_id = str(GlobalID(ProjectSession.__name__, str(project_session.id)))
+    project_session_id = str(
+        GlobalID(ProjectSession.__name__, f"{project_session.project_id}:{project_session.id}")
+    )
     query = """
         query ($projectSessionId: ID!) {
             node(id: $projectSessionId) {
@@ -443,7 +448,9 @@ async def test_project_session_traces_limit_first_page_size(
         project_session = await _add_project_session(session, project)
         await _add_trace(session, project, project_session)
 
-    project_session_id = str(GlobalID(ProjectSession.__name__, str(project_session.id)))
+    project_session_id = str(
+        GlobalID(ProjectSession.__name__, f"{project_session.project_id}:{project_session.id}")
+    )
     query = """
         query ($projectSessionId: ID!, $first: Int!) {
             node(id: $projectSessionId) {

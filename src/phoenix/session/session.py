@@ -211,7 +211,7 @@ class ThreadSession(Session):
         shutdown_callbacks.extend(instrument_engine_if_enabled(engine))
         # Ensure engine is disposed on shutdown to properly close database connections
         shutdown_callbacks.append(engine.dispose)
-        factory = DbSessionFactory(db=_db(engine), dialect=engine.dialect.name)
+        factory = DbSessionFactory(db=_db(engine), dialect=engine.dialect.name, engine=engine)
         self.app = create_app(
             db=factory,
             authentication_enabled=False,

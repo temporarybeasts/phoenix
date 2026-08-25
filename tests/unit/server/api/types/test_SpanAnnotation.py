@@ -62,7 +62,7 @@ async def test_annotating_a_span(
     gql_client: AsyncGraphQLClient,
     project_with_a_single_trace_and_span: Any,
 ) -> None:
-    span_gid = GlobalID("Span", "1")
+    span_gid = GlobalID("Span", "1:1")  # single project/trace/span, both row ids are 1
     response = await gql_client.execute(
         query="""
             mutation AddSpanAnnotation($input: [CreateSpanAnnotationInput!]!) {

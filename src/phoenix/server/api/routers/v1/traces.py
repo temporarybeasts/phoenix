@@ -24,7 +24,7 @@ from phoenix.db.helpers import SupportedSQLDialect, token_counts_by_trace
 from phoenix.db.insertion.helpers import as_kv, insert_on_conflict
 from phoenix.server.api.helpers.annotations import get_note_identifier
 from phoenix.server.api.routers.v1.annotations import TraceAnnotationData
-from phoenix.server.api.types.node import from_global_id_with_expected_type
+from phoenix.server.api.types.node import parse_project_scoped_node_id
 from phoenix.server.api.types.Project import Project as ProjectNodeType
 from phoenix.server.api.types.ProjectSession import ProjectSession as ProjectSessionNodeType
 from phoenix.server.api.types.Span import Span as SpanNodeType
@@ -101,7 +101,7 @@ def _to_trace_data(
     prompt = token_counts[0] if token_counts is not None else 0
     completion = token_counts[1] if token_counts is not None else 0
     return TraceData(
-        id=str(GlobalID(TraceNodeType.__name__, str(trace.id))),
+        id=str(GlobalID(TraceNodeType.__name__, f"{project_id}:{trace.id}")),
         trace_id=trace.trace_id,
         project_id=str(GlobalID(ProjectNodeType.__name__, str(project_id))),
         start_time=trace.start_time,
@@ -174,9 +174,13 @@ async def list_project_traces(
             session_id_strings = []
             for sid in session_identifier:
                 try:
-                    row_id = from_global_id_with_expected_type(
-                        GlobalID.from_id(sid), _PROJECT_SESSION_NODE_TYPE_NAME
-                    )
+                    global_id = GlobalID.from_id(sid)
+                    if global_id.type_name != _PROJECT_SESSION_NODE_TYPE_NAME:
+                        raise ValueError("not a ProjectSession global id")
+                    # ProjectSession's node id is compound "<project_id>:<row_id>"
+                    # (see Stage 4b-1); only the row id is needed here since the
+                    # result is filtered to this endpoint's own project below.
+                    _, row_id = parse_project_scoped_node_id(global_id.node_id)
                     session_rowids_from_global_ids.append(row_id)
                 except Exception:
                     session_id_strings.append(sid)
@@ -208,7 +212,10 @@ async def list_project_traces(
 
         if cursor:
             try:
-                cursor_rowid = int(GlobalID.from_id(cursor).node_id)
+                # Trace's node id is compound "<project_id>:<row_id>" (Stage
+                # 4b-1); only the row id is needed since this endpoint is
+                # already scoped to one project.
+                _, cursor_rowid = parse_project_scoped_node_id(GlobalID.from_id(cursor).node_id)
                 if order == "desc":
                     stmt = stmt.where(models.Trace.id <= cursor_rowid)
                 else:
@@ -225,7 +232,7 @@ async def list_project_traces(
         next_cursor: Optional[str] = None
         if len(traces) == limit + 1:
             last_trace = traces[-1]
-            next_cursor = str(GlobalID(TraceNodeType.__name__, str(last_trace.id)))
+            next_cursor = str(GlobalID(TraceNodeType.__name__, f"{project_rowid}:{last_trace.id}"))
             traces = traces[:-1]
 
         trace_rowids = [t.id for t in traces]
@@ -258,7 +265,7 @@ async def list_project_traces(
             for row in (await session.execute(spans_stmt)).all():
                 spans_by_trace[row.trace_rowid].append(
                     TraceSpanData(
-                        id=str(GlobalID(SpanNodeType.__name__, str(row.id))),
+                        id=str(GlobalID(SpanNodeType.__name__, f"{project_rowid}:{row.id}")),
                         span_id=row.span_id,
                         parent_id=row.parent_id,
                         name=row.name,
@@ -637,11 +644,14 @@ async def transfer_traces(
     otel_trace_ids: set[str] = set()
     for identifier in request_body.trace_identifiers:
         try:
-            trace_rowids.add(
-                from_global_id_with_expected_type(
-                    GlobalID.from_id(identifier), TraceNodeType.__name__
-                )
-            )
+            global_id = GlobalID.from_id(identifier)
+            if global_id.type_name != TraceNodeType.__name__:
+                raise ValueError("not a Trace global id")
+            # Trace's node id is compound "<project_id>:<row_id>" (Stage
+            # 4b-1); only the row id is needed -- the source project is
+            # re-derived from the rows themselves just below.
+            _, trace_rowid = parse_project_scoped_node_id(global_id.node_id)
+            trace_rowids.add(trace_rowid)
         except ValueError:
             otel_trace_ids.add(identifier)
     async with request.app.state.db() as session:
@@ -720,10 +730,12 @@ async def delete_trace(
     async with request.app.state.db() as session:
         # Try to parse as GlobalID first, then fall back to trace_id
         try:
-            trace_rowid = from_global_id_with_expected_type(
-                GlobalID.from_id(trace_identifier),
-                "Trace",
-            )
+            global_id = GlobalID.from_id(trace_identifier)
+            if global_id.type_name != "Trace":
+                raise ValueError("not a Trace global id")
+            # Trace's node id is compound "<project_id>:<row_id>" (Stage
+            # 4b-1); only the row id is needed for a delete-by-rowid.
+            _, trace_rowid = parse_project_scoped_node_id(global_id.node_id)
             # Delete by database rowid
             delete_stmt = (
                 delete(models.Trace)

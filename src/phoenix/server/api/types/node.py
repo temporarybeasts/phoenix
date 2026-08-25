@@ -68,3 +68,18 @@ def get_sandbox_backend_type_from_global_id(global_id: GlobalID) -> "SandboxBack
             expected_type_name="SandboxProvider",
         ),
     )
+
+
+def parse_project_scoped_node_id(node_id: str) -> tuple[int, int]:
+    """Parses the compound "<project_id>:<row_id>" node id used by
+    Trace/Span/ProjectSession (see Stage 4b-1 of the SSO/RBAC fork plan):
+    once each project has its own Postgres schema, a bare row id is no
+    longer globally unique, so these types encode both. `node_id` here is
+    already the decoded remainder after the type name was split off (i.e.
+    `GlobalID.node_id`, not the raw base64 string).
+    """
+    try:
+        project_id_str, row_id_str = node_id.split(":", 1)
+        return int(project_id_str), int(row_id_str)
+    except ValueError:
+        raise ValueError(f"Invalid project-scoped node id: {node_id}") from None

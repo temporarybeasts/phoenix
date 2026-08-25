@@ -647,7 +647,11 @@ class TaskWorkItem(WorkItem):
                         dataset_example_id=example_id,
                         repetition_number=self._repetition_number,
                         span=(
-                            Span(id=error_db_span.id, db_record=error_db_span)
+                            Span(
+                                id=error_db_span.id,
+                                project_id=self._project_id,
+                                db_record=error_db_span,
+                            )
                             if error_db_span is not None
                             else None
                         ),
@@ -703,7 +707,11 @@ class TaskWorkItem(WorkItem):
 
             self._running_experiment._broadcast(
                 ChatCompletionSubscriptionResult(
-                    span=(Span(id=db_span.id, db_record=db_span) if db_span is not None else None),
+                    span=(
+                        Span(id=db_span.id, project_id=self._project_id, db_record=db_span)
+                        if db_span is not None
+                        else None
+                    ),
                     experiment_run=ExperimentRun(id=db_run.id, db_record=db_run),
                     dataset_example_id=example_id,
                     repetition_number=self._repetition_number,
@@ -963,7 +971,11 @@ class EvalWorkItem(WorkItem):
                         dataset_example_id=example_id,
                         repetition_number=self._experiment_run.repetition_number,
                         trace=(
-                            Trace(id=eval_db_trace.id, db_record=eval_db_trace)
+                            Trace(
+                                id=eval_db_trace.id,
+                                project_id=eval_db_trace.project_rowid,
+                                db_record=eval_db_trace,
+                            )
                             if eval_db_trace
                             else None
                         ),

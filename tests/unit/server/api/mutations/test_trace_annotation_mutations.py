@@ -91,7 +91,7 @@ class TestTraceAnnotationMutations:
         - Patch (label)
         - Delete
         """
-        trace_gid = str(GlobalID("Trace", str(_trace_data.id)))
+        trace_gid = str(GlobalID("Trace", f"{_trace_data.project_rowid}:{_trace_data.id}"))
 
         # 1) Basic create (no identifier)
         create_input: dict[str, Any] = {
@@ -231,7 +231,7 @@ class TestTraceAnnotationMutations:
         _trace_data: models.Trace,
         gql_client: AsyncGraphQLClient,
     ) -> None:
-        trace_gid = str(GlobalID("Trace", str(_trace_data.id)))
+        trace_gid = str(GlobalID("Trace", f"{_trace_data.project_rowid}:{_trace_data.id}"))
         response = await gql_client.execute(
             self.QUERY,
             {
@@ -261,7 +261,8 @@ class TestTraceAnnotationMutations:
         self,
         gql_client: AsyncGraphQLClient,
     ) -> None:
-        missing_trace_gid = str(GlobalID("Trace", "2003"))
+        # Well-formed compound id (Stage 4b-1); no project/trace exists at all.
+        missing_trace_gid = str(GlobalID("Trace", "999:2003"))
         response = await gql_client.execute(
             self.QUERY,
             {

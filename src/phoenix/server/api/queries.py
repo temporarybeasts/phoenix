@@ -101,7 +101,7 @@ from phoenix.server.api.types.GenerativeModelCustomProvider import (
 from phoenix.server.api.types.GenerativeProvider import GenerativeProvider, GenerativeProviderKey
 from phoenix.server.api.types.node import (
     from_global_id_with_expected_type,
-    is_composite_global_id,
+    parse_project_scoped_node_id,
 )
 from phoenix.server.api.types.OAuth2Grant import OAuth2Grant
 from phoenix.server.api.types.pagination import (
@@ -1020,23 +1020,45 @@ class Query:
 
     @strawberry.field
     async def node(self, id: strawberry.ID, info: Info[Context, None]) -> Node:
-        if is_composite_global_id(id):
-            try:
-                experiment_rowid, dataset_example_rowid = (
-                    parse_experiment_repeated_run_group_node_id(id)
-                )
-            except Exception:
-                raise NotFound(f"Unknown node: {id}")
-            return ExperimentRepeatedRunGroup(
-                experiment_rowid=experiment_rowid,
-                dataset_example_rowid=dataset_example_rowid,
-            )
-
+        # Decode the GlobalID *first* and dispatch on its type_name, rather
+        # than the previous "if it looks composite, assume it's an
+        # ExperimentRepeatedRunGroup" shortcut -- that shortcut would have
+        # silently misrouted the new Trace/Span/ProjectSession compound ids
+        # (Stage 4b-1) into ExperimentRepeatedRunGroup's parser, which
+        # would reject them and return NotFound instead of ever reaching
+        # the real dispatch below. GlobalID.from_id splits only once on
+        # ":", so this works identically to before for every non-composite
+        # type -- only the two composite cases are now type-name-gated
+        # instead of composite-shape-gated.
         try:
             global_id = GlobalID.from_id(id)
         except ValueError:
             raise NotFound(f"Unknown node: {id}") from None
         type_name = global_id.type_name
+
+        if type_name == ExperimentRepeatedRunGroup.__name__:
+            try:
+                experiment_rowid, dataset_example_rowid = (
+                    parse_experiment_repeated_run_group_node_id(id)
+                )
+            except Exception:
+                raise NotFound(f"Unknown node: {id}") from None
+            return ExperimentRepeatedRunGroup(
+                experiment_rowid=experiment_rowid,
+                dataset_example_rowid=dataset_example_rowid,
+            )
+        if type_name in (Trace.__name__, Span.__name__, ProjectSession.__name__):
+            try:
+                project_id, row_id = parse_project_scoped_node_id(global_id.node_id)
+            except ValueError:
+                raise NotFound(f"Unknown node: {id}") from None
+            if type_name == Trace.__name__:
+                return Trace(id=row_id, project_id=project_id)
+            elif type_name == Span.__name__:
+                return Span(id=row_id, project_id=project_id)
+            else:
+                return ProjectSession(id=row_id, project_id=project_id)
+
         if type_name == Secret.__name__:
             return Secret(id=global_id.node_id)
         if type_name == SandboxProvider.__name__:
@@ -1055,10 +1077,6 @@ class Query:
             raise NotFound(f"Unknown node type: {type_name}")
         if type_name == Project.__name__:
             return Project(id=node_id)
-        elif type_name == Trace.__name__:
-            return Trace(id=node_id)
-        elif type_name == Span.__name__:
-            return Span(id=node_id)
         elif type_name == Dataset.__name__:
             return Dataset(id=node_id)
         elif type_name == DatasetExample.__name__:
@@ -1077,8 +1095,6 @@ class Query:
             if int((user := info.context.user).identity) != node_id and not user.is_admin:
                 raise Unauthorized(MSG_ADMIN_ONLY)
             return User(id=node_id)
-        elif type_name == ProjectSession.__name__:
-            return ProjectSession(id=node_id)
         elif type_name == OAuth2Grant.__name__:
             return OAuth2Grant(id=node_id)
         elif type_name == AgentSession.__name__:
@@ -1100,9 +1116,37 @@ class Query:
         elif type_name == ProjectTraceRetentionPolicy.__name__:
             return ProjectTraceRetentionPolicy(id=node_id)
         elif type_name == SpanAnnotation.__name__:
-            return SpanAnnotation(id=node_id)
+            # project_rowid fetched alongside the row here -- only correct
+            # while ingest still writes into the shared schema (see the same
+            # caveat on get_span_by_otel_id above); needs the OTel-ID index
+            # (Stage 4b-3) once Stage 4b-2 rewires ingest per-project.
+            async with info.context.db.read() as session:
+                span_annotation_project_id = await session.scalar(
+                    select(models.Trace.project_rowid)
+                    .join(models.Span, models.Span.trace_rowid == models.Trace.id)
+                    .join(
+                        models.SpanAnnotation,
+                        models.SpanAnnotation.span_rowid == models.Span.id,
+                    )
+                    .where(models.SpanAnnotation.id == node_id)
+                )
+            if span_annotation_project_id is None:
+                raise NotFound(f"Unknown span annotation: {id}")
+            return SpanAnnotation(id=node_id, project_id=span_annotation_project_id)
         elif type_name == TraceAnnotation.__name__:
-            return TraceAnnotation(id=node_id)
+            # Same temporary caveat as SpanAnnotation above.
+            async with info.context.db.read() as session:
+                trace_annotation_project_id = await session.scalar(
+                    select(models.Trace.project_rowid)
+                    .join(
+                        models.TraceAnnotation,
+                        models.TraceAnnotation.trace_rowid == models.Trace.id,
+                    )
+                    .where(models.TraceAnnotation.id == node_id)
+                )
+            if trace_annotation_project_id is None:
+                raise NotFound(f"Unknown trace annotation: {id}")
+            return TraceAnnotation(id=node_id, project_id=trace_annotation_project_id)
         elif type_name == GenerativeModel.__name__:
             return GenerativeModel(id=node_id)
         elif type_name == LLMEvaluator.__name__:
@@ -1752,11 +1796,21 @@ class Query:
         info: Info[Context, None],
         span_id: str,
     ) -> Optional[Span]:
-        stmt = select(models.Span.id).filter_by(span_id=span_id)
+        # project_rowid is fetched alongside the span row id here -- only
+        # correct because ingest still writes into the shared schema (see
+        # Stage 4b-1's plan notes); once ingest is rewired to write
+        # per-project (Stage 4b-2), this lookup needs the OTel-ID index
+        # (Stage 4b-3) instead.
+        stmt = (
+            select(models.Span.id, models.Trace.project_rowid)
+            .join(models.Trace, models.Span.trace_rowid == models.Trace.id)
+            .filter(models.Span.span_id == span_id)
+        )
         async with info.context.db.read() as session:
-            span_rowid = await session.scalar(stmt)
-        if span_rowid:
-            return Span(id=span_rowid)
+            row = (await session.execute(stmt)).first()
+        if row:
+            span_rowid, project_rowid = row
+            return Span(id=span_rowid, project_id=project_rowid)
         return None
 
     @strawberry.field
@@ -1765,11 +1819,16 @@ class Query:
         info: Info[Context, None],
         trace_id: str,
     ) -> Optional[Trace]:
-        stmt = select(models.Trace.id).where(models.Trace.trace_id == trace_id)
+        # Same temporary "fetch it from the still-shared schema" caveat as
+        # get_span_by_otel_id above.
+        stmt = select(models.Trace.id, models.Trace.project_rowid).where(
+            models.Trace.trace_id == trace_id
+        )
         async with info.context.db.read() as session:
-            trace_rowid = await session.scalar(stmt)
-        if trace_rowid:
-            return Trace(id=trace_rowid)
+            row = (await session.execute(stmt)).first()
+        if row:
+            trace_rowid, project_rowid = row
+            return Trace(id=trace_rowid, project_id=project_rowid)
         return None
 
     @strawberry.field
@@ -1795,7 +1854,9 @@ class Query:
         async with info.context.db.read() as session:
             session_row = await session.scalar(stmt)
         if session_row:
-            return ProjectSession(id=session_row.id, db_record=session_row)
+            return ProjectSession(
+                id=session_row.id, project_id=session_row.project_id, db_record=session_row
+            )
         return None
 
     @strawberry.field

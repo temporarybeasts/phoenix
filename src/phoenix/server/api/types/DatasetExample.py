@@ -81,7 +81,7 @@ class DatasetExample(Node):
         from .Span import Span
 
         return (
-            Span(id=span.id, db_record=span)
+            Span(id=span.id, project_id=span.trace.project_rowid, db_record=span)
             if (span := await info.context.data_loaders.dataset_example_spans.load(self.id))
             else None
         )

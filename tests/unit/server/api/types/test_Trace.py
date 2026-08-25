@@ -30,10 +30,12 @@ class TestTrace:
         trace: models.Trace,
         httpx_client: httpx.AsyncClient,
     ) -> Any:
+        # Stage 4b-1: Trace's node id is now compound "<project_id>:<row_id>";
+        # project_rowid is a real column here.
         return await _node(
             field,
             Trace.__name__,
-            trace.id,
+            f"{trace.project_rowid}:{trace.id}",
             httpx_client,
         )
 
@@ -65,7 +67,11 @@ class TestTrace:
         field = "session{id sessionId}"
         assert await self._node(field, traces[0], httpx_client) is None
         assert await self._node(field, traces[1], httpx_client) == {
-            "id": str(GlobalID(ProjectSession.__name__, str(project_session.id))),
+            "id": str(
+                GlobalID(
+                    ProjectSession.__name__, f"{project_session.project_id}:{project_session.id}"
+                )
+            ),
             "sessionId": project_session.session_id,
         }
 
@@ -79,7 +85,7 @@ class TestTrace:
         field = "rootSpan{id name}"
         assert await self._node(field, traces[0], httpx_client) is None
         assert await self._node(field, traces[1], httpx_client) == {
-            "id": str(GlobalID(Span.__name__, str(span.id))),
+            "id": str(GlobalID(Span.__name__, f"{span.project_rowid}:{span.id}")),
             "name": span.name,
         }
 
@@ -128,7 +134,7 @@ async def test_trace_spans_pagination(
             spans.append(span)
         await session.commit()
 
-    trace_gid = str(GlobalID(Trace.__name__, str(trace.id)))
+    trace_gid = str(GlobalID(Trace.__name__, f"{trace.project_rowid}:{trace.id}"))
 
     query = """
         query ($traceId: ID!, $first: Int!, $after: String) {
@@ -247,7 +253,7 @@ async def test_trace_spans_require_first(
         project = await _add_project(session)
         trace = await _add_trace(session, project)
 
-    trace_gid = str(GlobalID(Trace.__name__, str(trace.id)))
+    trace_gid = str(GlobalID(Trace.__name__, f"{trace.project_rowid}:{trace.id}"))
     query = """
         query ($traceId: ID!) {
             node(id: $traceId) {
@@ -282,7 +288,7 @@ async def test_trace_spans_limit_first_page_size(
         project = await _add_project(session)
         trace = await _add_trace(session, project)
 
-    trace_gid = str(GlobalID(Trace.__name__, str(trace.id)))
+    trace_gid = str(GlobalID(Trace.__name__, f"{trace.project_rowid}:{trace.id}"))
     query = """
         query ($traceId: ID!, $first: Int!) {
             node(id: $traceId) {
@@ -353,7 +359,7 @@ async def test_trace_spans_pagination_parametrized(
             spans.append(span)
         await session.commit()
 
-    trace_gid = str(GlobalID(Trace.__name__, str(trace.id)))
+    trace_gid = str(GlobalID(Trace.__name__, f"{trace.project_rowid}:{trace.id}"))
     variables["traceId"] = trace_gid
 
     # For the second test case, set the cursor to skip first 2 spans
@@ -449,7 +455,7 @@ async def test_trace_spans_root_spans_only(
 
         await session.commit()
 
-    trace_gid = str(GlobalID(Trace.__name__, str(trace.id)))
+    trace_gid = str(GlobalID(Trace.__name__, f"{trace.project_rowid}:{trace.id}"))
 
     query = """
         query ($traceId: ID!, $first: Int!, $rootSpansOnly: Boolean, $orphanSpanAsRootSpan: Boolean) {
@@ -548,7 +554,7 @@ async def test_trace_spans_root_spans_only_cross_trace_parent(
 
         await session.commit()
 
-    trace_2_gid = str(GlobalID(Trace.__name__, str(trace_2.id)))
+    trace_2_gid = str(GlobalID(Trace.__name__, f"{trace_2.project_rowid}:{trace_2.id}"))
 
     query = """
         query ($traceId: ID!, $first: Int!, $rootSpansOnly: Boolean, $orphanSpanAsRootSpan: Boolean) {

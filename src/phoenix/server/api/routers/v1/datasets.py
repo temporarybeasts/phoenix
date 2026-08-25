@@ -1430,6 +1430,7 @@ async def get_dataset_examples(
                 models.DatasetExampleRevision,
                 models.Span.id,
                 models.Span.span_id,
+                models.Trace.project_rowid,
             )
             .join(
                 models.DatasetExampleRevision,
@@ -1440,6 +1441,7 @@ async def get_dataset_examples(
                 (subquery.c.max_id == models.DatasetExampleRevision.id),
             )
             .outerjoin(models.Span, models.DatasetExample.span_rowid == models.Span.id)
+            .outerjoin(models.Trace, models.Span.trace_rowid == models.Trace.id)
             .filter(models.DatasetExample.dataset_id == resolved_dataset_id)
             .filter(models.DatasetExampleRevision.revision_kind != "DELETE")
             .order_by(models.DatasetExample.id.asc())
@@ -1479,7 +1481,7 @@ async def get_dataset_examples(
                 source=(
                     DatasetExampleSource(
                         span_id=span_id,
-                        span_node_id=str(GlobalID("Span", str(span_rowid))),
+                        span_node_id=str(GlobalID("Span", f"{span_project_rowid}:{span_rowid}")),
                     )
                     if span_rowid is not None and span_id is not None
                     else None
@@ -1490,6 +1492,7 @@ async def get_dataset_examples(
                 revision,
                 span_rowid,
                 span_id,
+                span_project_rowid,
             ) in await session.stream(query)
         ]
     return ListDatasetExamplesResponseBody(

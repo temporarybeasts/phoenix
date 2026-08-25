@@ -44,18 +44,25 @@ def _gid(_: models.Base) -> str:
 
 @_gid.register
 def _(obj: models.ProjectSession) -> str:
-    return str(GlobalID(ProjectSession.__name__, str(obj.id)))
+    # Stage 4b-1: ProjectSession's GlobalID is now the compound
+    # "<project_id>:<row_id>" -- project_id is a real column here.
+    return str(GlobalID(ProjectSession.__name__, f"{obj.project_id}:{obj.id}"))
 
 
 @_gid.register
 def _(obj: models.Span) -> str:
-    return str(GlobalID(Span.__name__, str(obj.id)))
+    # Stage 4b-1: same compound-id rationale as ProjectSession above.
+    # Span has no project_rowid column of its own -- see the transient
+    # attribute stamped by `_add_span` in this module.
+    return str(GlobalID(Span.__name__, f"{obj.project_rowid}:{obj.id}"))
 
 
 async def _node(
     field: str,
     type_name: str,
-    id_: int,
+    # Stage 4b-1: Trace/Span/ProjectSession callers pass the compound
+    # "<project_id>:<row_id>" string instead of a bare row id.
+    id_: Union[int, str],
     httpx_client: httpx.AsyncClient,
 ) -> dict[str, Any]:
     query = "query($id:ID!){node(id:$id){... on " + type_name + "{" + field + "}}}"
@@ -136,8 +143,10 @@ async def _add_span(
         trace = await _add_trace(session, project)
     if parent_span is not None:
         trace_rowid = parent_span.trace_rowid
+        project_rowid = parent_span.project_rowid
     elif trace is not None:
         trace_rowid = trace.id
+        project_rowid = trace.project_rowid
     else:
         raise ValueError("Either `trace` or `parent_span` must be provided")
     span = models.Span(
@@ -160,6 +169,12 @@ async def _add_span(
     session.add(span)
     await session.flush()
     assert isinstance(await _get_record_by_id(session, models.Span, span.id), models.Span)
+    # Transient (non-mapped) attribute -- Span has no project_rowid column of
+    # its own (see Stage 4b-1: project is only reachable via trace_rowid ->
+    # Trace.project_rowid), so stamp it here for `_gid` and other test code
+    # that needs the compound "<project_id>:<row_id>" GlobalID without an
+    # extra query or an async relationship load.
+    span.project_rowid = project_rowid
     return span
 
 

@@ -10,8 +10,21 @@ from phoenix.server.api.auth import IsNotReadOnly, IsNotViewer
 from phoenix.server.api.context import Context
 from phoenix.server.api.exceptions import BadRequest
 from phoenix.server.api.queries import Query
-from phoenix.server.api.types.node import from_global_id_with_expected_type
+from phoenix.server.api.types.node import (
+    from_global_id_with_expected_type,
+    parse_project_scoped_node_id,
+)
 from phoenix.server.dml_event import SpanDeleteEvent
+
+
+def _trace_rowid(global_id: GlobalID) -> int:
+    # Trace's node id is compound "<project_id>:<row_id>" (Stage 4b-1); the
+    # client-supplied project_id is discarded -- callers re-derive it from
+    # the rows fetched by rowid.
+    if global_id.type_name != "Trace":
+        raise ValueError(f"Not a Trace global id: {global_id}")
+    _, row_id = parse_project_scoped_node_id(global_id.node_id)
+    return row_id
 
 
 @strawberry.type
@@ -26,10 +39,7 @@ class TraceMutationMixin:
             raise BadRequest("Must provide at least one trace ID to delete")
         trace_ids = list(set(trace_ids))
         try:
-            trace_rowids = [
-                from_global_id_with_expected_type(global_id=id, expected_type_name="Trace")
-                for id in trace_ids
-            ]
+            trace_rowids = [_trace_rowid(id) for id in trace_ids]
         except ValueError as error:
             raise BadRequest(str(error))
         async with info.context.db() as session:
@@ -84,10 +94,7 @@ class TraceMutationMixin:
             raise BadRequest("Must provide at least one trace ID to transfer")
         trace_ids = list(set(trace_ids))
         try:
-            trace_rowids = [
-                from_global_id_with_expected_type(global_id=id, expected_type_name="Trace")
-                for id in trace_ids
-            ]
+            trace_rowids = [_trace_rowid(id) for id in trace_ids]
             dest_project_rowid = from_global_id_with_expected_type(
                 global_id=project_id, expected_type_name="Project"
             )

@@ -12,7 +12,7 @@ import pandas as pd
 import strawberry
 from openinference.semconv.trace import SpanAttributes
 from strawberry import ID, UNSET
-from strawberry.relay import Connection, Node, NodeID
+from strawberry.relay import Connection, Node
 from strawberry.scalars import JSON
 from strawberry.types import Info
 from typing_extensions import Annotated, TypeAlias
@@ -121,16 +121,25 @@ class SpanAsExampleRevision(ExampleRevision): ...
 
 
 SpanRowId: TypeAlias = int
+ProjectRowId: TypeAlias = int
 
 
 @strawberry.type
 class Span(Node):
-    id: NodeID[SpanRowId]
+    # Schema-per-project (Stage 4b-1): see the matching comment on
+    # phoenix.server.api.types.Trace.Trace -- same compound-GlobalID
+    # rationale applies here.
+    id: strawberry.Private[SpanRowId]
+    project_id: strawberry.Private[ProjectRowId]
     db_record: strawberry.Private[Optional[models.Span]] = None
 
     def __post_init__(self) -> None:
         if self.db_record and self.id != self.db_record.id:
             raise ValueError("Span ID mismatch")
+
+    @classmethod
+    def resolve_id(cls, root: "Span", *, info: Info) -> str:
+        return f"{root.project_id}:{root.id}"
 
     @strawberry.field
     async def name(
@@ -140,7 +149,7 @@ class Span(Node):
         if self.db_record:
             return self.db_record.name
         value = await info.context.data_loaders.span_fields.load(
-            (self.id, models.Span.name),
+            (self.id, models.Span.name, self.project_id),
         )
         return str(value)
 
@@ -153,7 +162,7 @@ class Span(Node):
             value = self.db_record.status_code
         else:
             value = await info.context.data_loaders.span_fields.load(
-                (self.id, models.Span.status_code),
+                (self.id, models.Span.status_code, self.project_id),
             )
         return SpanStatusCode(value)
 
@@ -165,7 +174,7 @@ class Span(Node):
         if self.db_record:
             return self.db_record.status_message
         value = await info.context.data_loaders.span_fields.load(
-            (self.id, models.Span.status_message),
+            (self.id, models.Span.status_message, self.project_id),
         )
         return str(value)
 
@@ -177,7 +186,7 @@ class Span(Node):
         if self.db_record:
             return self.db_record.start_time
         value = await info.context.data_loaders.span_fields.load(
-            (self.id, models.Span.start_time),
+            (self.id, models.Span.start_time, self.project_id),
         )
         return cast(datetime, value)
 
@@ -189,7 +198,7 @@ class Span(Node):
         if self.db_record:
             return self.db_record.end_time
         value = await info.context.data_loaders.span_fields.load(
-            (self.id, models.Span.end_time),
+            (self.id, models.Span.end_time, self.project_id),
         )
         return cast(datetime, value)
 
@@ -201,7 +210,7 @@ class Span(Node):
         if self.db_record:
             return self.db_record.latency_ms
         value = await info.context.data_loaders.span_fields.load(
-            (self.id, models.Span.latency_ms),
+            (self.id, models.Span.latency_ms, self.project_id),
         )
         return cast(float, value)
 
@@ -216,7 +225,7 @@ class Span(Node):
             value = self.db_record.parent_id
         else:
             value = await info.context.data_loaders.span_fields.load(
-                (self.id, models.Span.parent_id),
+                (self.id, models.Span.parent_id, self.project_id),
             )
         return None if value is None else ID(value)
 
@@ -229,7 +238,7 @@ class Span(Node):
             value = self.db_record.span_kind
         else:
             value = await info.context.data_loaders.span_fields.load(
-                (self.id, models.Span.span_kind),
+                (self.id, models.Span.span_kind, self.project_id),
             )
         return SpanKind(value)
 
@@ -242,7 +251,7 @@ class Span(Node):
             span_id = self.db_record.span_id
         else:
             span_id = await info.context.data_loaders.span_fields.load(
-                (self.id, models.Span.span_id),
+                (self.id, models.Span.span_id, self.project_id),
             )
         return ID(span_id)
 
@@ -255,11 +264,11 @@ class Span(Node):
             trace_rowid = self.db_record.trace_rowid
         else:
             trace_rowid = await info.context.data_loaders.span_fields.load(
-                (self.id, models.Span.trace_rowid),
+                (self.id, models.Span.trace_rowid, self.project_id),
             )
         from phoenix.server.api.types.Trace import Trace
 
-        return Trace(id=trace_rowid)
+        return Trace(id=trace_rowid, project_id=self.project_id)
 
     @strawberry.field
     async def context(
@@ -272,10 +281,10 @@ class Span(Node):
         else:
             span_id, trace_id = await gather(
                 info.context.data_loaders.span_fields.load(
-                    (self.id, models.Span.span_id),
+                    (self.id, models.Span.span_id, self.project_id),
                 ),
                 info.context.data_loaders.span_fields.load(
-                    (self.id, models.Trace.trace_id),
+                    (self.id, models.Trace.trace_id, self.project_id),
                 ),
             )
         return SpanContext(trace_id=ID(trace_id), span_id=ID(span_id))
@@ -291,7 +300,7 @@ class Span(Node):
             value = self.db_record.attributes
         else:
             value = await info.context.data_loaders.span_fields.load(
-                (self.id, models.Span.attributes),
+                (self.id, models.Span.attributes, self.project_id),
             )
         return json.dumps(_hide_embedding_vectors(value), cls=_JSONEncoder)
 
@@ -306,7 +315,7 @@ class Span(Node):
             value = self.db_record.metadata_
         else:
             value = await info.context.data_loaders.span_fields.load(
-                (self.id, models.Span.metadata_),
+                (self.id, models.Span.metadata_, self.project_id),
             )
         return _convert_metadata_to_string(value)
 
@@ -322,7 +331,7 @@ class Span(Node):
             value = self.db_record.user_id
         else:
             value = await info.context.data_loaders.span_fields.load(
-                (self.id, models.Span.user_id),
+                (self.id, models.Span.user_id, self.project_id),
             )
         if value is None or isinstance(value, str):
             return value
@@ -336,7 +345,7 @@ class Span(Node):
         if self.db_record:
             return self.db_record.num_documents
         value = await info.context.data_loaders.span_fields.load(
-            (self.id, models.Span.num_documents),
+            (self.id, models.Span.num_documents, self.project_id),
         )
         return cast(int, value)
 
@@ -351,7 +360,7 @@ class Span(Node):
         if self.db_record:
             return self.db_record.llm_token_count_total
         value = await info.context.data_loaders.span_fields.load(
-            (self.id, models.Span.llm_token_count_total),
+            (self.id, models.Span.llm_token_count_total, self.project_id),
         )
         return cast(Optional[int], value)
 
@@ -365,7 +374,7 @@ class Span(Node):
         if self.db_record:
             return self.db_record.llm_token_count_prompt
         value = await info.context.data_loaders.span_fields.load(
-            (self.id, models.Span.llm_token_count_prompt),
+            (self.id, models.Span.llm_token_count_prompt, self.project_id),
         )
         return cast(Optional[int], value)
 
@@ -379,7 +388,7 @@ class Span(Node):
         if self.db_record:
             return self.db_record.llm_token_count_completion
         value = await info.context.data_loaders.span_fields.load(
-            (self.id, models.Span.llm_token_count_completion),
+            (self.id, models.Span.llm_token_count_completion, self.project_id),
         )
         return cast(Optional[int], value)
 
@@ -396,7 +405,7 @@ class Span(Node):
             attributes = self.db_record.attributes
         else:
             attributes = await info.context.data_loaders.span_fields.load(
-                (self.id, models.Span.attributes),
+                (self.id, models.Span.attributes, self.project_id),
             )
 
         cache_read: Optional[int] = None
@@ -446,16 +455,17 @@ class Span(Node):
             )
         mime_type, input_value_first_101_chars = await gather(
             info.context.data_loaders.span_fields.load(
-                (self.id, models.Span.input_mime_type),
+                (self.id, models.Span.input_mime_type, self.project_id),
             ),
             info.context.data_loaders.span_fields.load(
-                (self.id, models.Span.input_value_first_101_chars),
+                (self.id, models.Span.input_value_first_101_chars, self.project_id),
             ),
         )
         if not input_value_first_101_chars:
             return None
         return SpanIOValue(
             span_rowid=self.id,
+            project_id=self.project_id,
             attr=models.Span.input_value,
             truncated_value=truncate_value(input_value_first_101_chars),
             mime_type=MimeType(mime_type),
@@ -478,16 +488,17 @@ class Span(Node):
             )
         mime_type, output_value_first_101_chars = await gather(
             info.context.data_loaders.span_fields.load(
-                (self.id, models.Span.output_mime_type),
+                (self.id, models.Span.output_mime_type, self.project_id),
             ),
             info.context.data_loaders.span_fields.load(
-                (self.id, models.Span.output_value_first_101_chars),
+                (self.id, models.Span.output_value_first_101_chars, self.project_id),
             ),
         )
         if not output_value_first_101_chars:
             return None
         return SpanIOValue(
             span_rowid=self.id,
+            project_id=self.project_id,
             attr=models.Span.output_value,
             truncated_value=truncate_value(output_value_first_101_chars),
             mime_type=MimeType(mime_type),
@@ -501,7 +512,7 @@ class Span(Node):
         if self.db_record:
             return [SpanEvent.from_dict(event) for event in self.db_record.events]
         value = await info.context.data_loaders.span_fields.load(
-            (self.id, models.Span.events),
+            (self.id, models.Span.events, self.project_id),
         )
         return [SpanEvent.from_dict(event) for event in value]
 
@@ -516,7 +527,7 @@ class Span(Node):
         if self.db_record:
             return float(self.db_record.cumulative_llm_token_count_total)
         value = await info.context.data_loaders.span_fields.load(
-            (self.id, models.Span.cumulative_llm_token_count_total),
+            (self.id, models.Span.cumulative_llm_token_count_total, self.project_id),
         )
         return float(value) if value is not None else None
 
@@ -531,7 +542,7 @@ class Span(Node):
         if self.db_record:
             return float(self.db_record.cumulative_llm_token_count_prompt)
         value = await info.context.data_loaders.span_fields.load(
-            (self.id, models.Span.cumulative_llm_token_count_prompt),
+            (self.id, models.Span.cumulative_llm_token_count_prompt, self.project_id),
         )
         return float(value) if value is not None else None
 
@@ -546,7 +557,7 @@ class Span(Node):
         if self.db_record:
             return float(self.db_record.cumulative_llm_token_count_completion)
         value = await info.context.data_loaders.span_fields.load(
-            (self.id, models.Span.cumulative_llm_token_count_completion),
+            (self.id, models.Span.cumulative_llm_token_count_completion, self.project_id),
         )
         return float(value) if value is not None else None
 
@@ -562,7 +573,7 @@ class Span(Node):
             value = self.db_record.cumulative_error_count
         else:
             value = await info.context.data_loaders.span_fields.load(
-                (self.id, models.Span.cumulative_error_count),
+                (self.id, models.Span.cumulative_error_count, self.project_id),
             )
         return SpanStatusCode.ERROR if value else SpanStatusCode.OK
 
@@ -592,7 +603,8 @@ class Span(Node):
             key=lambda annotation: getattr(annotation, sort_key), reverse=sort_descending
         )
         return [
-            SpanAnnotation(id=annotation.id, db_record=annotation) for annotation in annotations
+            SpanAnnotation(id=annotation.id, project_id=self.project_id, db_record=annotation)
+            for annotation in annotations
         ]
 
     @strawberry.field(description=("Notes associated with the span."))  # type: ignore
@@ -605,7 +617,8 @@ class Span(Node):
         annotations = [annotation for annotation in annotations if annotation.name == "note"]
         annotations.sort(key=lambda annotation: getattr(annotation, "created_at"), reverse=False)
         return [
-            SpanAnnotation(id=annotation.id, db_record=annotation) for annotation in annotations
+            SpanAnnotation(id=annotation.id, project_id=self.project_id, db_record=annotation)
+            for annotation in annotations
         ]
 
     @strawberry.field(description="Summarizes each annotation (by name) associated with the span")  # type: ignore
@@ -675,7 +688,7 @@ class Span(Node):
         info: Info[Context, None],
     ) -> list[DocumentAnnotation]:
         return [
-            DocumentAnnotation(id=anno.id, db_record=anno)
+            DocumentAnnotation(id=anno.id, project_id=self.project_id, db_record=anno)
             for anno in await info.context.data_loaders.document_evaluations.load(self.id)
         ]
 
@@ -691,7 +704,7 @@ class Span(Node):
             self.db_record.num_documents
             if self.db_record
             else await info.context.data_loaders.span_fields.load(
-                (self.id, models.Span.num_documents),
+                (self.id, models.Span.num_documents, self.project_id),
             )
         )
         if not num_documents:
@@ -733,7 +746,7 @@ class Span(Node):
         span_rowids: Iterable[int] = await info.context.data_loaders.span_descendants.load(
             (self.id, max_depth or None),
         )
-        data = [Span(id=span_rowid) for span_rowid in span_rowids]
+        data = [Span(id=span_rowid, project_id=self.project_id) for span_rowid in span_rowids]
         return connection_from_list(data=data, args=args)
 
     @strawberry.field(

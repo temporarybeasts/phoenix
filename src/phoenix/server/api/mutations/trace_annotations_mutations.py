@@ -15,7 +15,10 @@ from phoenix.server.api.input_types.DeleteAnnotationsInput import DeleteAnnotati
 from phoenix.server.api.input_types.PatchAnnotationInput import PatchAnnotationInput
 from phoenix.server.api.queries import Query
 from phoenix.server.api.types.AnnotationSource import AnnotationSource
-from phoenix.server.api.types.node import from_global_id_with_expected_type
+from phoenix.server.api.types.node import (
+    from_global_id_with_expected_type,
+    parse_project_scoped_node_id,
+)
 from phoenix.server.api.types.TraceAnnotation import TraceAnnotation
 from phoenix.server.bearer_auth import PhoenixUser
 from phoenix.server.dml_event import TraceAnnotationDeleteEvent, TraceAnnotationInsertEvent
@@ -51,7 +54,12 @@ class TraceAnnotationMutationMixin:
         trace_rowids = []
         for idx, annotation_input in enumerate(input):
             try:
-                trace_rowid = from_global_id_with_expected_type(annotation_input.trace_id, "Trace")
+                if annotation_input.trace_id.type_name != "Trace":
+                    raise ValueError("not a Trace global id")
+                # Trace's node id is compound "<project_id>:<row_id>" (Stage
+                # 4b-1); the client-supplied project_id is discarded here --
+                # the authoritative project_id is looked up from the DB below.
+                _, trace_rowid = parse_project_scoped_node_id(annotation_input.trace_id.node_id)
             except ValueError:
                 raise BadRequest(
                     f"Invalid trace ID for annotation at index {idx}: {annotation_input.trace_id}"
@@ -59,11 +67,15 @@ class TraceAnnotationMutationMixin:
             trace_rowids.append(trace_rowid)
 
         async with info.context.db() as session:
-            existing_trace_rowids = set(
-                await session.scalars(
-                    select(models.Trace.id).where(models.Trace.id.in_(set(trace_rowids)))
+            project_id_by_trace_rowid: dict[int, int] = {
+                row.id: row.project_rowid
+                for row in await session.execute(
+                    select(models.Trace.id, models.Trace.project_rowid).where(
+                        models.Trace.id.in_(set(trace_rowids))
+                    )
                 )
-            )
+            }
+            existing_trace_rowids = set(project_id_by_trace_rowid)
             missing_trace_ids = [
                 str(annotation_input.trace_id)
                 for trace_rowid, annotation_input in zip(trace_rowids, input)
@@ -130,7 +142,9 @@ class TraceAnnotationMutationMixin:
 
         returned_annotations = [
             TraceAnnotation(
-                id=processed_annotations_map[i].id, db_record=processed_annotations_map[i]
+                id=processed_annotations_map[i].id,
+                project_id=project_id_by_trace_rowid[processed_annotations_map[i].trace_rowid],
+                db_record=processed_annotations_map[i],
             )
             for i in sorted(processed_annotations_map.keys())
         ]
@@ -203,10 +217,25 @@ class TraceAnnotationMutationMixin:
                 if patch.identifier is not UNSET:
                     trace_annotation.identifier = patch.identifier or ""
                 session.add(trace_annotation)
+
+            project_id_by_trace_rowid = {
+                row.id: row.project_rowid
+                for row in await session.execute(
+                    select(models.Trace.id, models.Trace.project_rowid).where(
+                        models.Trace.id.in_(
+                            {ta.trace_rowid for ta in trace_annotations_by_id.values()}
+                        )
+                    )
+                )
+            }
             await session.commit()
 
         patched_annotations = [
-            TraceAnnotation(id=trace_annotation.id, db_record=trace_annotation)
+            TraceAnnotation(
+                id=trace_annotation.id,
+                project_id=project_id_by_trace_rowid[trace_annotation.trace_rowid],
+                db_record=trace_annotation,
+            )
             for trace_annotation in trace_annotations_by_id.values()
         ]
         info.context.event_queue.put(TraceAnnotationInsertEvent(tuple(patch_by_id.keys())))
@@ -264,9 +293,22 @@ class TraceAnnotationMutationMixin:
                     f"Could not find trace annotations with IDs: {missing_trace_annotation_ids}"
                 )
 
+            project_id_by_trace_rowid = {
+                row.id: row.project_rowid
+                for row in await session.execute(
+                    select(models.Trace.id, models.Trace.project_rowid).where(
+                        models.Trace.id.in_(
+                            {a.trace_rowid for a in deleted_annotations_by_id.values()}
+                        )
+                    )
+                )
+            }
+
         deleted_gql_annotations = [
             TraceAnnotation(
-                id=deleted_annotations_by_id[id].id, db_record=deleted_annotations_by_id[id]
+                id=deleted_annotations_by_id[id].id,
+                project_id=project_id_by_trace_rowid[deleted_annotations_by_id[id].trace_rowid],
+                db_record=deleted_annotations_by_id[id],
             )
             for id in trace_annotation_ids
         ]

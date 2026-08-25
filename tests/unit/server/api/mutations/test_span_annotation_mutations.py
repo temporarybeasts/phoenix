@@ -90,7 +90,7 @@ class TestSpanAnnotationMutations:
                 {
                     "input": [
                         {
-                            "spanId": str(GlobalID("Span", "1")),
+                            "spanId": str(GlobalID("Span", "1:1")),
                             "name": "test_annotation",
                             "label": "LABEL1",
                             "score": 0.75,
@@ -130,7 +130,7 @@ class TestSpanAnnotationMutations:
         gql_client: AsyncGraphQLClient,
     ) -> None:
         # Initial creation
-        span_gid = str(GlobalID("Span", "2"))
+        span_gid = str(GlobalID("Span", "1:2"))
         base_input = {
             "spanId": span_gid,
             "name": "conflict_test",
@@ -175,7 +175,7 @@ class TestSpanAnnotationMutations:
         gql_client: AsyncGraphQLClient,
     ) -> None:
         # Initial creation
-        span_gid = str(GlobalID("Span", "2"))
+        span_gid = str(GlobalID("Span", "1:2"))
         base_input = {
             "spanId": span_gid,
             "name": "conflict_test",
@@ -223,7 +223,7 @@ class TestSpanAnnotationMutations:
             {
                 "input": [
                     {
-                        "spanId": str(GlobalID("Span", "1")),
+                        "spanId": str(GlobalID("Span", "1:1")),
                         "name": "note",
                         "explanation": "This should fail",
                         "annotatorKind": AnnotatorKind.HUMAN.name,
@@ -246,7 +246,7 @@ class TestSpanAnnotationMutations:
         self,
         gql_client: AsyncGraphQLClient,
     ) -> None:
-        missing_span_gid = str(GlobalID("Span", "104"))
+        missing_span_gid = str(GlobalID("Span", "1:104"))
         response = await gql_client.execute(
             self.CREATE_SPAN_ANNOTATIONS_MUTATION,
             {
@@ -284,7 +284,7 @@ class TestSpanAnnotationMutations:
           }
         }
         """
-        missing_span_gid = str(GlobalID("Span", "104"))
+        missing_span_gid = str(GlobalID("Span", "1:104"))
         response = await gql_client.execute(
             mutation,
             {
@@ -316,7 +316,7 @@ class TestSpanAnnotationMutations:
             mutation,
             {
                 "annotationInput": {
-                    "spanId": str(GlobalID("Span", "1")),
+                    "spanId": str(GlobalID("Span", "1:1")),
                     "note": "Needs review",
                 }
             },

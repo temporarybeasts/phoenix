@@ -485,6 +485,7 @@ def _create_db_session_factory(
             db=_db(primary_engine),
             read_db=read_db,
             dialect=primary_engine.dialect.name,
+            engine=primary_engine,
         ),
         shutdown_callbacks,
     )

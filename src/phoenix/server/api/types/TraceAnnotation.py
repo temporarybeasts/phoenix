@@ -21,6 +21,9 @@ if TYPE_CHECKING:
 @strawberry.type
 class TraceAnnotation(Node):
     id: NodeID[int]
+    # Schema-per-project (Stage 4b-1): see the matching comment on
+    # phoenix.server.api.types.SpanAnnotation.SpanAnnotation.
+    project_id: strawberry.Private[int]
     db_record: strawberry.Private[Optional[models.TraceAnnotation]] = None
 
     def __post_init__(self) -> None:
@@ -36,7 +39,7 @@ class TraceAnnotation(Node):
             val = self.db_record.name
         else:
             val = await info.context.data_loaders.trace_annotation_fields.load(
-                (self.id, models.TraceAnnotation.name),
+                (self.id, models.TraceAnnotation.name, self.project_id),
             )
         return val
 
@@ -49,7 +52,7 @@ class TraceAnnotation(Node):
             val = self.db_record.annotator_kind
         else:
             val = await info.context.data_loaders.trace_annotation_fields.load(
-                (self.id, models.TraceAnnotation.annotator_kind),
+                (self.id, models.TraceAnnotation.annotator_kind, self.project_id),
             )
         return AnnotatorKind(val)
 
@@ -64,7 +67,7 @@ class TraceAnnotation(Node):
             val = self.db_record.label
         else:
             val = await info.context.data_loaders.trace_annotation_fields.load(
-                (self.id, models.TraceAnnotation.label),
+                (self.id, models.TraceAnnotation.label, self.project_id),
             )
         return val
 
@@ -77,7 +80,7 @@ class TraceAnnotation(Node):
             val = self.db_record.score
         else:
             val = await info.context.data_loaders.trace_annotation_fields.load(
-                (self.id, models.TraceAnnotation.score),
+                (self.id, models.TraceAnnotation.score, self.project_id),
             )
         return val if val is not None and isfinite(val) else None
 
@@ -92,7 +95,7 @@ class TraceAnnotation(Node):
             val = self.db_record.explanation
         else:
             val = await info.context.data_loaders.trace_annotation_fields.load(
-                (self.id, models.TraceAnnotation.explanation),
+                (self.id, models.TraceAnnotation.explanation, self.project_id),
             )
         return val
 
@@ -105,7 +108,7 @@ class TraceAnnotation(Node):
             val = self.db_record.metadata_
         else:
             val = await info.context.data_loaders.trace_annotation_fields.load(
-                (self.id, models.TraceAnnotation.metadata_),
+                (self.id, models.TraceAnnotation.metadata_, self.project_id),
             )
         return JSON(val)
 
@@ -118,7 +121,7 @@ class TraceAnnotation(Node):
             val = self.db_record.identifier
         else:
             val = await info.context.data_loaders.trace_annotation_fields.load(
-                (self.id, models.TraceAnnotation.identifier),
+                (self.id, models.TraceAnnotation.identifier, self.project_id),
             )
         return val
 
@@ -131,7 +134,7 @@ class TraceAnnotation(Node):
             val = self.db_record.source
         else:
             val = await info.context.data_loaders.trace_annotation_fields.load(
-                (self.id, models.TraceAnnotation.source),
+                (self.id, models.TraceAnnotation.source, self.project_id),
             )
         return AnnotationSource(val)
 
@@ -144,7 +147,7 @@ class TraceAnnotation(Node):
             val = self.db_record.created_at
         else:
             val = await info.context.data_loaders.trace_annotation_fields.load(
-                (self.id, models.TraceAnnotation.created_at),
+                (self.id, models.TraceAnnotation.created_at, self.project_id),
             )
         return val
 
@@ -157,7 +160,7 @@ class TraceAnnotation(Node):
             val = self.db_record.updated_at
         else:
             val = await info.context.data_loaders.trace_annotation_fields.load(
-                (self.id, models.TraceAnnotation.updated_at),
+                (self.id, models.TraceAnnotation.updated_at, self.project_id),
             )
         return val
 
@@ -170,11 +173,11 @@ class TraceAnnotation(Node):
             trace_rowid = self.db_record.trace_rowid
         else:
             trace_rowid = await info.context.data_loaders.trace_annotation_fields.load(
-                (self.id, models.TraceAnnotation.trace_rowid),
+                (self.id, models.TraceAnnotation.trace_rowid, self.project_id),
             )
         from .Trace import Trace
 
-        return Trace(id=trace_rowid)
+        return Trace(id=trace_rowid, project_id=self.project_id)
 
     @strawberry.field(description="The user that produced the annotation.")  # type: ignore
     async def user(
@@ -185,7 +188,7 @@ class TraceAnnotation(Node):
             user_id = self.db_record.user_id
         else:
             user_id = await info.context.data_loaders.trace_annotation_fields.load(
-                (self.id, models.TraceAnnotation.user_id),
+                (self.id, models.TraceAnnotation.user_id, self.project_id),
             )
         if user_id is None:
             return None

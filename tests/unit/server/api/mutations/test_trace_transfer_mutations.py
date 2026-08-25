@@ -60,8 +60,8 @@ class TestTraceTransferMutationMixin:
             self.TRANSFER_TRACES_MUTATION,
             variables={
                 "traceIds": [
-                    str(GlobalID("Trace", str(trace1_id))),
-                    str(GlobalID("Trace", str(trace2_id))),
+                    str(GlobalID("Trace", f"{source_project_id}:{trace1_id}")),
+                    str(GlobalID("Trace", f"{source_project_id}:{trace2_id}")),
                 ],
                 "projectId": str(GlobalID("Project", str(dest_project_id))),
             },
@@ -114,8 +114,8 @@ class TestTraceTransferMutationMixin:
             self.TRANSFER_TRACES_MUTATION,
             variables={
                 "traceIds": [
-                    str(GlobalID("Trace", str(trace1_id))),
-                    str(GlobalID("Trace", "99999")),
+                    str(GlobalID("Trace", f"{source_project_id}:{trace1_id}")),
+                    str(GlobalID("Trace", f"{source_project_id}:99999")),
                 ],
                 "projectId": str(GlobalID("Project", str(dest_project_id))),
             },
@@ -133,6 +133,7 @@ class TestTraceTransferMutationMixin:
         trace_transfer_fixture: dict[str, int],
         db: DbSessionFactory,
     ) -> None:
+        source_project_id = trace_transfer_fixture["source_project_id"]
         trace1_id = trace_transfer_fixture["trace1_id"]
         trace2_id = trace_transfer_fixture["trace2_id"]
 
@@ -148,8 +149,8 @@ class TestTraceTransferMutationMixin:
             self.TRANSFER_TRACES_MUTATION,
             variables={
                 "traceIds": [
-                    str(GlobalID("Trace", str(trace1_id))),
-                    str(GlobalID("Trace", str(trace2_id))),
+                    str(GlobalID("Trace", f"{source_project_id}:{trace1_id}")),
+                    str(GlobalID("Trace", f"{source_project_id}:{trace2_id}")),
                 ],
                 "projectId": str(GlobalID("Project", "99999")),
             },
@@ -190,8 +191,8 @@ class TestTraceTransferMutationMixin:
             self.TRANSFER_TRACES_MUTATION,
             variables={
                 "traceIds": [
-                    str(GlobalID("Trace", str(trace1_id))),
-                    str(GlobalID("Trace", str(other_trace_id))),
+                    str(GlobalID("Trace", f"{source_project_id}:{trace1_id}")),
+                    str(GlobalID("Trace", f"{other_project_id}:{other_trace_id}")),
                 ],
                 "projectId": str(GlobalID("Project", str(dest_project_id))),
             },

@@ -127,7 +127,7 @@ async def _stream_single_chat_completion(
     if db_traces and db_traces[0].spans:
         db_span = db_traces[0].spans[0]
         yield ChatCompletionSubscriptionResult(
-            span=Span(id=db_span.id, db_record=db_span),
+            span=Span(id=db_span.id, project_id=project_id, db_record=db_span),
             repetition_number=repetition_number,
         )
         on_span_insertion()

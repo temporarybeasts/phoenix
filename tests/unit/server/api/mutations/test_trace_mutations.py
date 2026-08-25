@@ -47,7 +47,7 @@ class TestTraceMutationMixin:
         # Delete the trace
         result = await gql_client.execute(
             self.DELETE_TRACES_MUTATION,
-            variables={"traceIds": [str(GlobalID("Trace", str(trace_id)))]},
+            variables={"traceIds": [str(GlobalID("Trace", f"{trace.project_rowid}:{trace_id}"))]},
         )
         assert not result.errors
 
@@ -97,8 +97,8 @@ class TestTraceMutationMixin:
             self.DELETE_TRACES_MUTATION,
             variables={
                 "traceIds": [
-                    str(GlobalID("Trace", str(trace1_id))),
-                    str(GlobalID("Trace", str(trace2_id))),
+                    str(GlobalID("Trace", f"{trace1.project_rowid}:{trace1_id}")),
+                    str(GlobalID("Trace", f"{trace2.project_rowid}:{trace2_id}")),
                 ]
             },
         )
@@ -155,8 +155,9 @@ class TestTraceMutationMixin:
             self.DELETE_TRACES_MUTATION,
             variables={
                 "traceIds": [
-                    str(GlobalID("Trace", str(trace_id))),
-                    str(GlobalID("Trace", "1000")),  # non-existent trace id
+                    str(GlobalID("Trace", f"{trace.project_rowid}:{trace_id}")),
+                    # non-existent trace id, well-formed compound id (Stage 4b-1)
+                    str(GlobalID("Trace", f"{trace.project_rowid}:1000")),
                 ]
             },
         )
@@ -196,6 +197,15 @@ class TestTraceMutationMixin:
             )
             assert trace_count == 3
 
+            project_rowid_by_trace_id = {
+                row.id: row.project_rowid
+                for row in await session.execute(
+                    select(models.Trace.id, models.Trace.project_rowid).where(
+                        models.Trace.id.in_([trace1_id, trace2_id, other_trace_id])
+                    )
+                )
+            }
+
             # Verify spans
             span_count = await session.scalar(
                 select(func.count())
@@ -215,9 +225,14 @@ class TestTraceMutationMixin:
             self.DELETE_TRACES_MUTATION,
             variables={
                 "traceIds": [
-                    str(GlobalID("Trace", str(trace1_id))),
-                    str(GlobalID("Trace", str(trace2_id))),
-                    str(GlobalID("Trace", str(other_trace_id))),
+                    str(GlobalID("Trace", f"{project_rowid_by_trace_id[trace1_id]}:{trace1_id}")),
+                    str(GlobalID("Trace", f"{project_rowid_by_trace_id[trace2_id]}:{trace2_id}")),
+                    str(
+                        GlobalID(
+                            "Trace",
+                            f"{project_rowid_by_trace_id[other_trace_id]}:{other_trace_id}",
+                        )
+                    ),
                 ]
             },
         )
