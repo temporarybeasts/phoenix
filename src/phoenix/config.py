@@ -256,6 +256,14 @@ Azure scope URL for PostgreSQL access token requests.
 Defaults to the standard scope for Azure Database for PostgreSQL - Flexible Server:
 https://ossrdbms-aad.database.windows.net/.default
 """
+ENV_PHOENIX_PROJECT_SCOPED_STORAGE_ENABLED = "PHOENIX_PROJECT_SCOPED_STORAGE_ENABLED"
+"""
+Stage 4b-2d of the SSO/RBAC fork plan: routes trace/span/session/annotation/cost
+ingest and reads through each project's own Postgres schema instead of the
+shared schema. Postgres-only; restart-required; single deployment-wide flip,
+not gradual per-project. Refuses to come up if Stage 4b-2c's data-migration
+completion marker isn't present -- see `db/facilitator.py`'s startup gate.
+"""
 ENV_PHOENIX_SQL_DATABASE_SCHEMA = "PHOENIX_SQL_DATABASE_SCHEMA"
 """
 The schema to use for the PostgresSQL database. (This is ignored for SQLite.)
@@ -3388,6 +3396,10 @@ def get_env_database_schema() -> Optional[str]:
     if get_env_database_connection_str().startswith("sqlite"):
         return None
     return getenv(ENV_PHOENIX_SQL_DATABASE_SCHEMA) or None
+
+
+def get_env_project_scoped_storage_enabled() -> bool:
+    return _bool_val(ENV_PHOENIX_PROJECT_SCOPED_STORAGE_ENABLED, False)
 
 
 def get_env_database_allocated_storage_capacity_gibibytes() -> Optional[float]:

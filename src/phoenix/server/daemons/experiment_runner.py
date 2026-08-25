@@ -118,6 +118,7 @@ from phoenix.db.types.experiment_log import (
     RetriesExhaustedDetail,
 )
 from phoenix.db.types.prompts import PromptChatTemplate, PromptInvocationParameters
+from phoenix.server.access.schema_provisioning import project_scoped_session
 from phoenix.server.api.evaluators import (
     BaseEvaluator,
     LLMEvaluator,
@@ -494,9 +495,18 @@ class TaskWorkItem(WorkItem):
         Returns the persisted ExperimentRun with its generated id.
         """
         with anyio.fail_after(5, shield=True):
-            async with self._db() as session:
-                if db_traces:
+            # Two separate sessions/transactions, not one: `db_traces` are
+            # project-scoped, but `ExperimentRun` is a shared table the
+            # per-project role (switched in by `project_scoped_session` via
+            # `SET LOCAL ROLE`) has no grants on -- confirmed directly
+            # against real Postgres (`permission denied for table
+            # experiment_runs`) when this was still one session. Mirrors
+            # `_persist_eval_results`'s existing traces/annotations split
+            # below, the same shape of problem solved the same way.
+            if db_traces:
+                async with project_scoped_session(self._db, self._project_id) as session:
                     session.add_all(db_traces)
+            async with self._db() as session:
                 stmt = insert_on_conflict(
                     {
                         "experiment_id": db_run.experiment_id,
@@ -1008,7 +1018,7 @@ class EvalWorkItem(WorkItem):
 
         async def _persist_traces() -> None:
             if db_traces:
-                async with self._db() as session:
+                async with project_scoped_session(self._db, self._project_id) as session:
                     session.add_all(db_traces)
 
         async def _persist_annotations() -> None:

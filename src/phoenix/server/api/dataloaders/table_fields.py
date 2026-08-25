@@ -6,6 +6,7 @@ from strawberry.dataloader import DataLoader
 from typing_extensions import TypeAlias
 
 from phoenix.db import models
+from phoenix.server.access.schema_provisioning import project_scoped_read_connection
 from phoenix.server.types import DbSessionFactory
 
 PrimaryKey: TypeAlias = Any
@@ -68,9 +69,13 @@ class ProjectScopedTableFieldsDataLoader(DataLoader[ProjectScopedKey, Result]):
         for pk, attr, project_id in keys:
             by_project.setdefault(project_id, []).append((pk, attr))
         result: dict[tuple[ProjectId, PrimaryKey, _AttrStrIdentifier], Result] = {}
-        async with self._db.read() as session:
-            for project_id, project_keys in by_project.items():
-                stmt, attr_strs = _get_stmt(project_keys, self._table)
+        # One `project_scoped_read_connection` per project group -- see
+        # that helper for why this is a real per-project fan-out (real
+        # routing once schema-per-project storage is enabled) rather than
+        # the shared-engine query every group used before Stage 4b-2d.
+        for project_id, project_keys in by_project.items():
+            stmt, attr_strs = _get_stmt(project_keys, self._table)
+            async with project_scoped_read_connection(self._db, project_id) as session:
                 data = await session.stream(stmt)
                 async for row in data:
                     pk = row[0]

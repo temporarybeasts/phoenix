@@ -212,7 +212,9 @@ class Trace(Node):
         self,
         info: Info[Context, None],
     ) -> Optional[Span]:
-        span_rowid = await info.context.data_loaders.trace_root_spans.load(self.id)
+        span_rowid = await info.context.data_loaders.trace_root_spans.load(
+            (self.id, self.project_id)
+        )
         if span_rowid is None:
             return None
         return Span(id=span_rowid, project_id=self.project_id)
@@ -232,7 +234,7 @@ class Trace(Node):
         self,
         info: Info[Context, None],
     ) -> int:
-        return await info.context.data_loaders.num_spans_per_trace.load(self.id)
+        return await info.context.data_loaders.num_spans_per_trace.load((self.id, self.project_id))
 
     @strawberry.field(  # type: ignore[untyped-decorator]
         description=(
@@ -244,7 +246,9 @@ class Trace(Node):
         self,
         info: Info[Context, None],
     ) -> list[SpanKindCount]:
-        rows = await info.context.data_loaders.trace_span_counts_by_kind.load(self.id)
+        rows = await info.context.data_loaders.trace_span_counts_by_kind.load(
+            (self.id, self.project_id)
+        )
         # The dataloader groups by the raw DB `span_kind` string. `SpanKind(kind)`
         # collapses any non-canonical value (lowercase, legacy name, etc.) to
         # `SpanKind.unknown` via the enum's `_missing_` hook, which can produce
@@ -269,7 +273,7 @@ class Trace(Node):
         self,
         info: Info[Context, None],
     ) -> int:
-        return await info.context.data_loaders.trace_error_count.load(self.id)
+        return await info.context.data_loaders.trace_error_count.load((self.id, self.project_id))
 
     @strawberry.field(  # type: ignore[untyped-decorator]
         description=(
@@ -282,7 +286,7 @@ class Trace(Node):
         self,
         info: Info[Context, None],
     ) -> list[SpanErrorTypeCount]:
-        rows = await info.context.data_loaders.trace_errors_by_type.load(self.id)
+        rows = await info.context.data_loaders.trace_errors_by_type.load((self.id, self.project_id))
         return [
             SpanErrorTypeCount(exception_type=exc_type, count=count) for exc_type, count in rows
         ]
@@ -399,7 +403,11 @@ class Trace(Node):
         sort: Optional[TraceAnnotationSort] = UNSET,
         filter: Optional[AnnotationFilter] = None,
     ) -> list[TraceAnnotation]:
-        annotations = list(await info.context.data_loaders.trace_annotations_by_trace.load(self.id))
+        annotations = list(
+            await info.context.data_loaders.trace_annotations_by_trace.load(
+                (self.id, self.project_id)
+            )
+        )
         sort_key = TraceAnnotationColumn.createdAt.value
         sort_descending = True
         if filter:
@@ -442,7 +450,9 @@ class Trace(Node):
             - data: A list of dictionaries with label statistics
         """
         # Load all annotations for this span from the data loader
-        annotations = await info.context.data_loaders.trace_annotations_by_trace.load(self.id)
+        annotations = await info.context.data_loaders.trace_annotations_by_trace.load(
+            (self.id, self.project_id)
+        )
 
         # Apply filter if provided to narrow down the annotations
         if filter:
@@ -479,7 +489,7 @@ class Trace(Node):
         info: Info[Context, None],
     ) -> SpanCostSummary:
         loader = info.context.data_loaders.span_cost_summary_by_trace
-        summary = await loader.load(self.id)
+        summary = await loader.load((self.id, self.project_id))
         return SpanCostSummary(
             prompt=CostBreakdown(
                 tokens=summary.prompt.tokens,

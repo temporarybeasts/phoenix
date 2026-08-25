@@ -6,10 +6,11 @@ from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
+import pytest
 from jinja2 import Template
 from pydantic_ai.ui.vercel_ai.response_types import BaseChunk, ToolOutputAvailableChunk
 from pydantic_ai.usage import RequestUsage
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, text, update
 from strawberry.relay import GlobalID
 
 from phoenix.config import EPHEMERAL_AGENT_SESSION_TIME_TO_LIVE_HOURS
@@ -432,6 +433,74 @@ class TestPersistDbTracesAndEmitEvent:
             assert project_session is not None
             assert project_session.start_time == start_time
             assert project_session.end_time == start_time + timedelta(seconds=3)
+
+    @pytest.mark.postgres_only
+    async def test_flag_on_groups_traces_by_project_and_isolates_schemas(
+        self,
+        db: DbSessionFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With PHOENIX_PROJECT_SCOPED_STORAGE_ENABLED, a `db_traces` batch
+        spanning two different projects must persist each trace into its
+        own project's schema (not the shared one), and the emitted event
+        must carry both project ids -- exercising `_persist_db_traces_and_
+        emit_event`'s per-project grouping, not just single-project routing.
+        """
+        monkeypatch.setenv("PHOENIX_PROJECT_SCOPED_STORAGE_ENABLED", "true")
+        async with db() as session:
+            project_a = models.Project(name="pxi-multi-project-test-a")
+            project_b = models.Project(name="pxi-multi-project-test-b")
+            session.add_all([project_a, project_b])
+            await session.flush()
+            project_a_id, project_b_id = project_a.id, project_b.id
+
+        start_time = datetime(2026, 6, 29, 15, 0, tzinfo=timezone.utc)
+        db_traces = [
+            self._trace(
+                project_id=project_a_id,
+                session_id="session-a",
+                trace_id="trace-a",
+                span_id="span-a",
+                start_time=start_time,
+            ),
+            self._trace(
+                project_id=project_b_id,
+                session_id="session-b",
+                trace_id="trace-b",
+                span_id="span-b",
+                start_time=start_time,
+            ),
+        ]
+        event_queue = _EventQueue()
+
+        await _persist_db_traces_and_emit_event(
+            db=db,
+            event_queue=event_queue,
+            db_traces=db_traces,
+        )
+
+        assert len(event_queue.events) == 1
+        emitted = event_queue.events[0]
+        assert isinstance(emitted, SpanInsertEvent)
+        assert set(emitted.ids) == {project_a_id, project_b_id}
+
+        async with db() as session:
+            conn = await session.connection()
+            a_has_a = await conn.scalar(
+                text(f'SELECT trace_id FROM "project_{project_a_id}".traces WHERE trace_id = :t'),
+                {"t": "trace-a"},
+            )
+            a_has_b = await conn.scalar(
+                text(f'SELECT trace_id FROM "project_{project_a_id}".traces WHERE trace_id = :t'),
+                {"t": "trace-b"},
+            )
+            b_has_b = await conn.scalar(
+                text(f'SELECT trace_id FROM "project_{project_b_id}".traces WHERE trace_id = :t'),
+                {"t": "trace-b"},
+            )
+        assert a_has_a == "trace-a"
+        assert a_has_b is None
+        assert b_has_b == "trace-b"
 
 
 class TestBuildMessageMetadataChunk:

@@ -8,6 +8,7 @@ from strawberry.dataloader import AbstractCache, DataLoader
 from typing_extensions import TypeAlias, assert_never
 
 from phoenix.db import models
+from phoenix.server.access.schema_provisioning import project_scoped_read_connection
 from phoenix.server.api.dataloaders.cache import TwoTierCache
 from phoenix.server.api.input_types.TimeRange import TimeRange
 from phoenix.server.session_filters import get_filtered_session_rowids_subquery
@@ -92,13 +93,18 @@ class RecordCountDataLoader(DataLoader[Key, Result]):
         for position, key in enumerate(keys):
             segment, param = _cache_key_fn(key)
             arguments[segment][param].append(position)
-        async with self._db.read() as session:
-            for segment, params in arguments.items():
-                stmt = _get_stmt(segment, *params.keys())
-                data = await session.stream(stmt)
-                async for project_rowid, count in data:
-                    for position in params[project_rowid]:
-                        results[position] = count
+        for segment, params in arguments.items():
+            # One query per project, not one for the whole batch: `_get_stmt`
+            # touches project-scoped tables (Trace/Span/ProjectSession), so a
+            # single cross-project query can't route to one schema once
+            # project-scoped storage is enabled.
+            for project_rowid, positions in params.items():
+                stmt = _get_stmt(segment, project_rowid)
+                async with project_scoped_read_connection(self._db, project_rowid) as session:
+                    data = await session.stream(stmt)
+                    async for _, count in data:
+                        for position in positions:
+                            results[position] = count
         return results
 
 

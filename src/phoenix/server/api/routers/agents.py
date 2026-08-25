@@ -3,6 +3,7 @@ import binascii
 import hashlib
 import json
 import logging
+from collections import defaultdict
 from collections.abc import (
     AsyncGenerator,
     AsyncIterator,
@@ -117,6 +118,7 @@ from phoenix.db.types.data_stream_protocol import (
     UIMessagePart,
 )
 from phoenix.db.types.db_helper_types import UNDEFINED
+from phoenix.server.access.schema_provisioning import project_scoped_session
 from phoenix.server.agents.agent_factory import build_agent
 from phoenix.server.agents.capabilities import get_external_tool_definition
 from phoenix.server.agents.capabilities.skills import Skill
@@ -1197,10 +1199,23 @@ async def _persist_db_traces_and_emit_event(
 ) -> None:
     if not db_traces:
         return
-    async with db() as session:
-        project_ids = await _persist_db_traces(session=session, db_traces=db_traces)
-    if project_ids:
-        event_queue.put(SpanInsertEvent(project_ids))
+    # Grouped by project and persisted one project at a time, each through
+    # its own `project_scoped_session`: in practice every real caller of
+    # this function passes traces from a single `tracer.get_db_traces(
+    # project_id=...)` call (so `db_traces` is single-project today), but
+    # `_persist_db_traces` was written to support a mixed-project batch, so
+    # this stays correct if that ever changes instead of silently routing
+    # a mixed batch into just one project's schema.
+    traces_by_project: dict[int, list[models.Trace]] = defaultdict(list)
+    for db_trace in db_traces:
+        traces_by_project[db_trace.project_rowid].append(db_trace)
+    all_project_ids: set[int] = set()
+    for project_id, project_traces in traces_by_project.items():
+        async with project_scoped_session(db, project_id) as session:
+            project_ids = await _persist_db_traces(session=session, db_traces=project_traces)
+        all_project_ids.update(project_ids)
+    if all_project_ids:
+        event_queue.put(SpanInsertEvent(tuple(all_project_ids)))
 
 
 async def _refresh_cumulative_span_counts(

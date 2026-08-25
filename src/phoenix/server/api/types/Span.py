@@ -589,7 +589,9 @@ class Span(Node):
         filter: Optional[AnnotationFilter] = None,
     ) -> list[SpanAnnotation]:
         span_id = self.id
-        annotations = await info.context.data_loaders.span_annotations.load(span_id)
+        annotations = await info.context.data_loaders.span_annotations.load(
+            (span_id, self.project_id)
+        )
         sort_key = SpanAnnotationColumn.name.value
         sort_descending = False
         if filter:
@@ -613,7 +615,9 @@ class Span(Node):
         info: Info[Context, None],
     ) -> list[SpanAnnotation]:
         span_id = self.id
-        annotations = await info.context.data_loaders.span_annotations.load(span_id)
+        annotations = await info.context.data_loaders.span_annotations.load(
+            (span_id, self.project_id)
+        )
         annotations = [annotation for annotation in annotations if annotation.name == "note"]
         annotations.sort(key=lambda annotation: getattr(annotation, "created_at"), reverse=False)
         return [
@@ -644,7 +648,9 @@ class Span(Node):
             - data: A list of dictionaries with label statistics
         """
         # Load all annotations for this span from the data loader
-        annotations = await info.context.data_loaders.span_annotations.load(self.id)
+        annotations = await info.context.data_loaders.span_annotations.load(
+            (self.id, self.project_id)
+        )
 
         # Apply filter if provided to narrow down the annotations
         if filter:
@@ -689,7 +695,9 @@ class Span(Node):
     ) -> list[DocumentAnnotation]:
         return [
             DocumentAnnotation(id=anno.id, project_id=self.project_id, db_record=anno)
-            for anno in await info.context.data_loaders.document_evaluations.load(self.id)
+            for anno in await info.context.data_loaders.document_evaluations.load(
+                (self.id, self.project_id)
+            )
         ]
 
     @strawberry.field(
@@ -715,7 +723,7 @@ class Span(Node):
 
     @strawberry.field
     async def num_child_spans(self, info: Info[Context, None]) -> int:
-        return await info.context.data_loaders.num_child_spans.load(self.id)
+        return await info.context.data_loaders.num_child_spans.load((self.id, self.project_id))
 
     @strawberry.field(
         description="All descendant spans (children, grandchildren, etc.)",
@@ -759,12 +767,14 @@ class Span(Node):
         span = (
             self.db_record
             if self.db_record
-            else await info.context.data_loaders.span_by_id.load(self.id)
+            else await info.context.data_loaders.span_by_id.load((self.id, self.project_id))
         )
 
         # Fetch annotations associated with this span using the dataloader
         # which returns ORM objects directly
-        span_annotations = await info.context.data_loaders.span_annotations.load(self.id)
+        span_annotations = await info.context.data_loaders.span_annotations.load(
+            (self.id, self.project_id)
+        )
         annotations: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for annotation in span_annotations:
             annotations[annotation.name].append(
@@ -811,7 +821,9 @@ class Span(Node):
 
     @strawberry.field
     async def cost_summary(self, info: Info[Context, None]) -> Optional[SpanCostSummary]:
-        span_cost = await info.context.data_loaders.span_cost_by_span.load(self.id)
+        span_cost = await info.context.data_loaders.span_cost_by_span.load(
+            (self.id, self.project_id)
+        )
         if span_cost is None:
             return None
         return SpanCostSummary(

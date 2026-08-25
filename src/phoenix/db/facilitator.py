@@ -77,6 +77,7 @@ class Facilitator:
 
     async def __call__(self) -> None:
         for fn in (
+            _ensure_project_scoped_storage_migration_complete,
             _ensure_enums,
             _ensure_user_roles,
             _get_system_user_id,
@@ -190,6 +191,44 @@ async def _ensure_project_schemas_provisioned(db: DbSessionFactory) -> None:
         connection = await session.connection()
         for project_id in project_ids:
             await provision_project_schema(connection, project_id)
+
+
+async def _ensure_project_scoped_storage_migration_complete(db: DbSessionFactory) -> None:
+    """Stage 4b-2d hard startup gate. If `PHOENIX_PROJECT_SCOPED_STORAGE_ENABLED`
+    is set, refuses to boot unless Stage 4b-2c's data-migration script
+    (`migrate_to_project_scoped_schemas.py`) has completed a full pass
+    against this database -- checked via its completion marker, a
+    singleton row in `project_scoped_storage_migration_status`. Flipping
+    the flag on without having backfilled would make every project's
+    reads/writes silently start from an empty per-project schema; this
+    fails loud, at boot, before any other Facilitator step runs, instead.
+    """
+    if not config.get_env_project_scoped_storage_enabled():
+        return
+    if db.dialect is not SupportedSQLDialect.POSTGRESQL:
+        raise RuntimeError(
+            f"{config.ENV_PHOENIX_PROJECT_SCOPED_STORAGE_ENABLED} requires PostgreSQL."
+        )
+    shared_schema = config.get_env_database_schema()
+    table_ref = (
+        f'"{shared_schema}".project_scoped_storage_migration_status'
+        if shared_schema
+        else "project_scoped_storage_migration_status"
+    )
+    error = RuntimeError(
+        f"{config.ENV_PHOENIX_PROJECT_SCOPED_STORAGE_ENABLED} is set, but Stage 4b-2c's "
+        "data migration (migrate_to_project_scoped_schemas.py) has not completed a full "
+        "pass against this database. Run it to completion before enabling this flag."
+    )
+    try:
+        async with db() as session:
+            completed_at = await session.scalar(
+                sa.text(f"SELECT completed_at FROM {table_ref} WHERE id = TRUE")
+            )
+    except Exception:
+        raise error from None
+    if completed_at is None:
+        raise error
 
 
 async def _ensure_oauth2_clients(db: DbSessionFactory) -> None:

@@ -23,6 +23,34 @@ class ClearProjectSpansEvent(NamedTuple):
     project_rowid: int
 
 
+async def resolve_or_create_project_id(session: AsyncSession, project_name: str) -> int:
+    """Look up a project by name, creating (and provisioning its schema)
+    if it doesn't exist yet. Extracted out of `insert_span`'s new-trace
+    branch (Stage 4b-2d) so `BulkInserter` can resolve which project a
+    batch of spans belongs to -- and therefore which schema to route the
+    rest of the insert into -- *before* `insert_span` itself runs. Also
+    still used internally by `insert_span` below, unchanged.
+    """
+    if (
+        project_rowid := await session.scalar(
+            select(models.Project.id).filter_by(name=project_name)
+        )
+    ) is None:
+        project_rowid = await session.scalar(
+            insert(models.Project).values(name=project_name).returning(models.Project.id)
+        )
+        assert project_rowid is not None
+        # Inline, same connection/transaction: the post-commit hook
+        # (app.py's `_db()` factory) also provisions this project's
+        # schema, but only after this transaction commits -- too late
+        # for the Trace/Span this same call is about to persist, once
+        # real per-project write routing lands (Stage 4b-2d).
+        # `provision_project_schema` is idempotent, so the later
+        # post-commit call is a harmless no-op for this project.
+        await provision_project_schema(await session.connection(), project_rowid)
+    return project_rowid
+
+
 async def insert_span(
     session: AsyncSession,
     span: Span,
@@ -48,23 +76,7 @@ async def insert_span(
         # Trace record needs to be persisted for the first time.
         trace.start_time = span.start_time
         trace.end_time = span.end_time
-        if (
-            project_rowid := await session.scalar(
-                select(models.Project.id).filter_by(name=project_name)
-            )
-        ) is None:
-            project_rowid = await session.scalar(
-                insert(models.Project).values(name=project_name).returning(models.Project.id)
-            )
-            assert project_rowid is not None
-            # Inline, same connection/transaction: the post-commit hook
-            # (app.py's `_db()` factory) also provisions this project's
-            # schema, but only after this transaction commits -- too late
-            # for the Trace/Span this same call is about to persist, once
-            # real per-project write routing lands (Stage 4b-2d).
-            # `provision_project_schema` is idempotent, so the later
-            # post-commit call is a harmless no-op for this project.
-            await provision_project_schema(await session.connection(), project_rowid)
+        project_rowid = await resolve_or_create_project_id(session, project_name)
         trace.project_rowid = project_rowid
         session.add(trace)
 

@@ -281,7 +281,9 @@ class ProjectSession(Node):
         """Get all annotations for this session."""
         from .ProjectSessionAnnotation import ProjectSessionAnnotation
 
-        annotations = await info.context.data_loaders.session_annotations_by_session.load(self.id)
+        annotations = await info.context.data_loaders.session_annotations_by_session.load(
+            (self.id, self.project_id)
+        )
         return [
             ProjectSessionAnnotation(
                 id=annotation.id, project_id=self.project_id, db_record=annotation
@@ -314,7 +316,9 @@ class ProjectSession(Node):
             - data: A list of dictionaries with label statistics
         """
         # Load all annotations for this span from the data loader
-        annotations = await info.context.data_loaders.session_annotations_by_session.load(self.id)
+        annotations = await info.context.data_loaders.session_annotations_by_session.load(
+            (self.id, self.project_id)
+        )
 
         # Apply filter if provided to narrow down the annotations
         if filter:

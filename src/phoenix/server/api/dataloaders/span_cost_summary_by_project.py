@@ -9,6 +9,7 @@ from strawberry.dataloader import AbstractCache, DataLoader
 from typing_extensions import TypeAlias
 
 from phoenix.db import models
+from phoenix.server.access.schema_provisioning import project_scoped_read_connection
 from phoenix.server.api.dataloaders.cache import TwoTierCache
 from phoenix.server.api.dataloaders.types import CostBreakdown, SpanCostSummary
 from phoenix.server.api.input_types.TimeRange import TimeRange
@@ -85,26 +86,35 @@ class SpanCostSummaryByProjectDataLoader(DataLoader[Key, Result]):
         for position, key in enumerate(keys):
             segment, param = _cache_key_fn(key)
             arguments[segment][param].append(position)
-        async with self._db.read() as session:
-            for segment, params in arguments.items():
-                stmt = _get_stmt(segment, *params.keys())
-                data = await session.stream(stmt)
-                async for (
-                    id_,
-                    prompt_cost,
-                    completion_cost,
-                    total_cost,
-                    prompt_tokens,
-                    completion_tokens,
-                    total_tokens,
-                ) in data:
-                    summary = SpanCostSummary(
-                        prompt=CostBreakdown(tokens=prompt_tokens, cost=prompt_cost),
-                        completion=CostBreakdown(tokens=completion_tokens, cost=completion_cost),
-                        total=CostBreakdown(tokens=total_tokens, cost=total_cost),
-                    )
-                    for position in params.get(id_, []):
-                        results[position] = summary
+        for segment, params in arguments.items():
+            # One query per project, not one query for the whole batch:
+            # `_get_stmt` joins Trace -> SpanCost, both project-scoped
+            # tables, so a single cross-project query can't be routed to
+            # any one schema once project-scoped storage is enabled. The
+            # per-project loop below is the real per-project fan-out this
+            # loader needs, same shape as `ProjectScopedTableFieldsDataLoader`.
+            for project_rowid, positions in params.items():
+                stmt = _get_stmt(segment, project_rowid)
+                async with project_scoped_read_connection(self._db, project_rowid) as session:
+                    data = await session.stream(stmt)
+                    async for (
+                        id_,
+                        prompt_cost,
+                        completion_cost,
+                        total_cost,
+                        prompt_tokens,
+                        completion_tokens,
+                        total_tokens,
+                    ) in data:
+                        summary = SpanCostSummary(
+                            prompt=CostBreakdown(tokens=prompt_tokens, cost=prompt_cost),
+                            completion=CostBreakdown(
+                                tokens=completion_tokens, cost=completion_cost
+                            ),
+                            total=CostBreakdown(tokens=total_tokens, cost=total_cost),
+                        )
+                        for position in positions:
+                            results[position] = summary
         return results
 
 

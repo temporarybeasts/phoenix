@@ -8,6 +8,7 @@ from strawberry.dataloader import AbstractCache, DataLoader
 from typing_extensions import TypeAlias, assert_never
 
 from phoenix.db import models
+from phoenix.server.access.schema_provisioning import project_scoped_read_connection
 from phoenix.server.api.dataloaders.cache import TwoTierCache
 from phoenix.server.types import DbSessionFactory
 
@@ -61,25 +62,26 @@ class MinStartOrMaxEndTimeDataLoader(DataLoader[Key, Result]):
             segment, param = key
             arguments[segment][param].append(position)
         pid = models.Trace.project_rowid
-        stmt = (
-            select(
-                pid,
-                func.min(models.Trace.start_time).label("min_start"),
-                func.max(models.Trace.start_time).label("max_end"),
+        for project_rowid, kinds in arguments.items():
+            stmt = (
+                select(
+                    pid,
+                    func.min(models.Trace.start_time).label("min_start"),
+                    func.max(models.Trace.start_time).label("max_end"),
+                )
+                .where(pid == project_rowid)
+                .group_by(pid)
             )
-            .where(pid.in_(arguments.keys()))
-            .group_by(pid)
-        )
-        async with self._db.read() as session:
-            data = await session.stream(stmt)
-            async for project_rowid, min_start, max_end in data:
-                for kind, positions in arguments[project_rowid].items():
-                    if kind == "start":
-                        for position in positions:
-                            results[position] = min_start
-                    elif kind == "end":
-                        for position in positions:
-                            results[position] = max_end
-                    else:
-                        assert_never(kind)
+            async with project_scoped_read_connection(self._db, project_rowid) as session:
+                data = await session.stream(stmt)
+                async for _, min_start, max_end in data:
+                    for kind, positions in kinds.items():
+                        if kind == "start":
+                            for position in positions:
+                                results[position] = min_start
+                        elif kind == "end":
+                            for position in positions:
+                                results[position] = max_end
+                        else:
+                            assert_never(kind)
         return results

@@ -1,8 +1,9 @@
-from sqlalchemy import distinct, select
+from sqlalchemy import exists, select
 from strawberry.dataloader import DataLoader
 from typing_extensions import TypeAlias
 
 from phoenix.db import models
+from phoenix.server.access.schema_provisioning import project_scoped_read_connection
 from phoenix.server.types import DbSessionFactory
 
 Key: TypeAlias = int  # project rowid
@@ -15,8 +16,9 @@ class ProjectHasTracesDataLoader(DataLoader[Key, Result]):
         self._db = db
 
     async def _load_fn(self, keys: list[Key]) -> list[Result]:
-        pid = models.Trace.project_rowid
-        stmt = select(distinct(pid)).where(pid.in_(keys))
-        async with self._db.read() as session:
-            result = set(await session.scalars(stmt))
-        return [key in result for key in keys]
+        result: dict[Key, Result] = {}
+        for project_id in set(keys):
+            stmt = select(exists(select(1).select_from(models.Trace)))
+            async with project_scoped_read_connection(self._db, project_id) as session:
+                result[project_id] = bool(await session.scalar(stmt))
+        return [result[key] for key in keys]

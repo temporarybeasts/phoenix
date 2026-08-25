@@ -28,6 +28,7 @@ from phoenix.db.helpers import (
 )
 from phoenix.db.types.experiment_config import PlaygroundConfig
 from phoenix.db.types.identifier import Identifier
+from phoenix.server.access.schema_provisioning import project_scoped_session
 from phoenix.server.api.auth import IsLocked, IsNotReadOnly, IsNotViewer
 from phoenix.server.api.context import Context
 from phoenix.server.api.exceptions import NotFound
@@ -121,7 +122,7 @@ async def _stream_single_chat_completion(
         )
 
     db_traces = tracer.get_db_traces(project_id=project_id)
-    async with db() as session:
+    async with project_scoped_session(db, project_id) as session:
         session.add_all(db_traces)
         await session.flush()
     if db_traces and db_traces[0].spans:

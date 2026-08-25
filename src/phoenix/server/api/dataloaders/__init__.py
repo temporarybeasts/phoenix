@@ -90,7 +90,6 @@ from .span_cost_detail_summary_entries_by_model_and_scope import (
 )
 from .span_cost_detail_summary_entries_by_span import SpanCostDetailSummaryEntriesBySpanDataLoader
 from .span_cost_detail_summary_entries_by_trace import SpanCostDetailSummaryEntriesByTraceDataLoader
-from .span_cost_details_by_span_cost import SpanCostDetailsBySpanCostDataLoader
 from .span_cost_summary_by_experiment import SpanCostSummaryByExperimentDataLoader
 from .span_cost_summary_by_experiment_repeated_run_group import (
     SpanCostSummaryByExperimentRepeatedRunGroupDataLoader,
@@ -265,7 +264,6 @@ class DataLoaders:
     )
     span_cost_detail_summary_entries_by_span: SpanCostDetailSummaryEntriesBySpanDataLoader
     span_cost_detail_summary_entries_by_trace: SpanCostDetailSummaryEntriesByTraceDataLoader
-    span_cost_details_by_span_cost: SpanCostDetailsBySpanCostDataLoader
     span_cost_fields: ProjectScopedTableFieldsDataLoader
     span_cost_summary_by_experiment: SpanCostSummaryByExperimentDataLoader
     span_cost_summary_by_experiment_repeated_run_group: (
@@ -450,7 +448,6 @@ def build_data_loaders(
         ),
         span_cost_detail_summary_entries_by_span=SpanCostDetailSummaryEntriesBySpanDataLoader(db),
         span_cost_detail_summary_entries_by_trace=SpanCostDetailSummaryEntriesByTraceDataLoader(db),
-        span_cost_details_by_span_cost=SpanCostDetailsBySpanCostDataLoader(db),
         span_cost_detail_fields=ProjectScopedTableFieldsDataLoader(db, models.SpanCostDetail),
         span_cost_fields=ProjectScopedTableFieldsDataLoader(db, models.SpanCost),
         span_cost_summary_by_experiment=SpanCostSummaryByExperimentDataLoader(db),

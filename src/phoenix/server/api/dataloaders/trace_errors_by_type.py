@@ -6,13 +6,15 @@ from strawberry.dataloader import DataLoader
 from typing_extensions import TypeAlias
 
 from phoenix.db.models import Span
+from phoenix.server.access.schema_provisioning import project_scoped_read_connection
 from phoenix.server.types import DbSessionFactory
 from phoenix.trace.schemas import EXCEPTION_TYPE
 
 TraceRowId: TypeAlias = int
+ProjectId: TypeAlias = int
 ExceptionType: TypeAlias = Optional[str]
 
-Key: TypeAlias = TraceRowId
+Key: TypeAlias = tuple[TraceRowId, ProjectId]
 Result: TypeAlias = list[tuple[ExceptionType, int]]
 
 _ERROR_STATUS = "ERROR"
@@ -46,15 +48,19 @@ class TraceErrorsByTypeDataLoader(DataLoader[Key, Result]):
 
     async def _load_fn(self, keys: Iterable[Key]) -> list[Result]:
         keys = list(keys)
-        stmt = (
-            select(Span.trace_rowid, Span.events)
-            .where(Span.trace_rowid.in_(keys))
-            .where(Span.status_code == _ERROR_STATUS)
-        )
+        by_project: dict[ProjectId, list[TraceRowId]] = defaultdict(list)
+        for trace_rowid, project_id in keys:
+            by_project[project_id].append(trace_rowid)
         counters: dict[Key, Counter[ExceptionType]] = defaultdict(Counter)
-        async with self._db.read() as session:
-            async for trace_rowid, events in await session.stream(stmt):
-                counters[trace_rowid].update(_exception_types_from_events(events))
+        for project_id, trace_rowids in by_project.items():
+            stmt = (
+                select(Span.trace_rowid, Span.events)
+                .where(Span.trace_rowid.in_(trace_rowids))
+                .where(Span.status_code == _ERROR_STATUS)
+            )
+            async with project_scoped_read_connection(self._db, project_id) as session:
+                async for trace_rowid, events in await session.stream(stmt):
+                    counters[trace_rowid, project_id].update(_exception_types_from_events(events))
         return [_sorted_counts(counters[key]) for key in keys]
 
 

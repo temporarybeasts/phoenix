@@ -33,17 +33,23 @@ fundamentally can't do in one query.
 from __future__ import annotations
 
 import contextlib
+import logging
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import BLANK_SCHEMA, Insert, MetaData, event, select, text
 from sqlalchemy.engine import Connection, CursorResult, Engine
 from sqlalchemy.exc import InvalidRequestError
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 
-from phoenix.config import get_env_database_schema
+from phoenix.config import get_env_database_schema, get_env_project_scoped_storage_enabled
 from phoenix.db import models
+
+if TYPE_CHECKING:
+    from phoenix.server.types import DbSessionFactory
+
+logger = logging.getLogger(__name__)
 
 #: Populated by `_capture_new_project_ids` (an engine-level `after_execute`
 #: hook) whenever an INSERT into `projects` executes; read and cleared by
@@ -263,8 +269,9 @@ async def schema_scoped_connection(
 ) -> AsyncIterator[AsyncConnection]:
     """Explicit, not ambient: opens a connection routed at exactly one
     project's schema (via `schema_translate_map`) with that project's role
-    switched in. Demo/mechanism-proof helper for this spike -- not wired
-    into the real GraphQL/REST query surface or the dataloader layer.
+    switched in. Core-level -- for ORM-level access, see
+    `project_scoped_session`, which binds a real `AsyncSession` to a
+    connection opened this way.
 
     Keys the translate map on `models.PROJECT_SCOPED_SCHEMA_TOKEN`, not on
     `get_env_database_schema()`'s value directly (Stage 4b-2a) -- every
@@ -285,6 +292,110 @@ async def schema_scoped_connection(
         async with connection.begin():
             await connection.execute(text(f'SET LOCAL ROLE "{role_name}"'))
             yield connection
+
+
+@contextlib.asynccontextmanager
+async def project_scoped_session(
+    db: "DbSessionFactory", project_id: int
+) -> AsyncIterator[AsyncSession]:
+    """Stage 4b-2d: the single place that decides whether ORM access for
+    `project_id` goes through the project's own schema or the shared one,
+    gated on `PHOENIX_PROJECT_SCOPED_STORAGE_ENABLED`. Flag off (the
+    default, and the only valid state before Stage 4b-2c's migration has
+    run): behaves exactly like `db()`. Flag on: opens a
+    `schema_scoped_connection` for `project_id` and binds a real ORM
+    `AsyncSession` directly to that already-schema-translated connection --
+    confirmed directly against real Postgres that a Session bound this way
+    inherits the connection's `schema_translate_map` for every statement it
+    issues, so existing ORM code (`insert_span`, the annotation mutations,
+    etc.) needs no changes beyond being handed a session opened here
+    instead of `db()`'s.
+
+    Commit/rollback semantics mirror `db()`'s `Session.begin()`-based
+    factory in `app.py`: commits if the block exits cleanly, rolls back
+    otherwise. Implemented explicitly (not via `AsyncSession(...).begin()`)
+    because `schema_scoped_connection`'s connection already has its own
+    transaction open (needed to scope `SET LOCAL ROLE` to it) -- a second,
+    nested `Session.begin()` on top would conflict with it; a plain
+    `AsyncSession(bind=connection)` instead joins that existing transaction,
+    and `session.commit()`/`.rollback()` end it directly, same as this
+    module's own regression tests already exercise.
+
+    **Sharp edge, flag on**: every statement issued through the returned
+    session runs as the per-project role (`SET LOCAL ROLE`, switched in by
+    `schema_scoped_connection`), not the caller's normal privileges -- not
+    just the ones this helper redirects into the project schema. That role
+    only has grants on the 9 project-scoped tables plus `SELECT` on
+    `projects`/`users`/`generative_models` (see `provision_project_schema`).
+    Writing any *other* shared table (e.g. `ExperimentRun`) through a
+    session opened here fails with "permission denied" -- confirmed
+    directly, not a hypothetical: `experiment_runner.py`'s `_persist_run`
+    originally did exactly this in one session and had to be split into
+    two. Do the shared-table write through a plain `db()` session instead,
+    same as that fix and `_persist_eval_results`'s existing traces/
+    annotations split.
+    """
+    if not get_env_project_scoped_storage_enabled():
+        async with db() as session:
+            yield session
+        return
+    assert db.engine is not None
+    async with schema_scoped_connection(db.engine, project_id) as connection:
+        session = AsyncSession(bind=connection, expire_on_commit=False)
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+
+@contextlib.asynccontextmanager
+async def project_scoped_read_connection(
+    db: "DbSessionFactory", project_id: int
+) -> AsyncIterator[AsyncSession]:
+    """Read-only counterpart to `project_scoped_session`, for dataloaders
+    (`ProjectScopedTableFieldsDataLoader` and friends).
+
+    Always yields a real `AsyncSession` -- **not** a bare `AsyncConnection`
+    -- even in the flag-on path. A bare Core `AsyncConnection` executing
+    `select(SomeORMModel)` (a whole-entity select, as opposed to a
+    column-level one) does not hydrate ORM instances; it returns a `Row` of
+    raw column values, since ORM hydration is a `Session`-level concern,
+    not a Core one. Confirmed directly, not a hypothetical: a first version
+    of this helper yielded the bare `AsyncConnection` from
+    `schema_scoped_connection` and broke every dataloader that does a
+    whole-entity `select(...)` (`span_by_id`, `span_annotations`,
+    `document_evaluations`, etc.) with `AttributeError` on the returned
+    rows -- only dataloaders selecting individual columns (like
+    `table_fields.py`'s `_get_stmt`) happened to work, which is what let
+    the bug slip past those loaders' own tests. Binding a plain
+    `AsyncSession` to the connection (same technique as
+    `project_scoped_session`) fixes both cases uniformly.
+
+    Flag off: `db.read()` -- the existing read-replica-aware path,
+    unchanged. Flag on: `schema_scoped_connection(db.engine, project_id)`
+    -- **always hits the primary**, never a configured read replica, since
+    `DbSessionFactory` doesn't expose a read-replica `AsyncEngine`. This is
+    Stage 4b-2's own documented, accepted tradeoff for this stage (closing
+    it -- a `DbSessionFactory.read_engine`/`.scoped_read()` accessor -- is
+    a fast-follow, not a blocker); logged so it's observable in a
+    replica-configured deployment, not a silent surprise.
+    """
+    if not get_env_project_scoped_storage_enabled():
+        async with db.read() as session:
+            yield session
+        return
+    assert db.engine is not None
+    logger.info(
+        "Project-scoped read for project %s routed through the primary engine "
+        "(schema_scoped_connection has no read-replica variant)",
+        project_id,
+    )
+    async with schema_scoped_connection(db.engine, project_id) as connection:
+        yield AsyncSession(bind=connection, expire_on_commit=False)
 
 
 def _capture_new_project_ids(
