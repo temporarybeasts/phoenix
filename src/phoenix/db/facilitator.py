@@ -36,6 +36,7 @@ from phoenix.config import (
 from phoenix.db import models
 from phoenix.db.constants import DEFAULT_PROJECT_TRACE_RETENTION_POLICY_ID
 from phoenix.db.enums import ENUM_COLUMNS
+from phoenix.db.helpers import SupportedSQLDialect
 from phoenix.db.types.annotation_configs import (
     AnnotationType,
     CategoricalAnnotationConfig,
@@ -48,6 +49,7 @@ from phoenix.db.types.trace_retention import (
     TraceRetentionCronExpression,
     TraceRetentionRule,
 )
+from phoenix.server.access.schema_provisioning import provision_project_schema
 from phoenix.server.email.types import WelcomeEmailSender
 from phoenix.server.types import DbSessionFactory
 
@@ -87,6 +89,7 @@ class Facilitator:
             _ensure_oauth2_clients,
             _delete_expired_oauth2_authorization_codes,
             _delete_expired_childless_records,
+            _ensure_project_schemas_provisioned,
         ):
             await fn(self._db)
 
@@ -163,6 +166,30 @@ async def _ensure_user_roles(db: DbSessionFactory) -> None:
 PHOENIX_CLI_OAUTH2_CLIENT_ID = "phoenix-cli"
 PHOENIX_CLI_OAUTH2_CLIENT_NAME = "Phoenix CLI"
 PHOENIX_CLI_OAUTH2_REDIRECT_URIS = ["http://127.0.0.1/callback"]
+
+
+async def _ensure_project_schemas_provisioned(db: DbSessionFactory) -> None:
+    """Postgres-only, one-time-per-boot reconciliation pass (Stage 4b-2b):
+    provisions any project whose per-project schema is missing.
+
+    Closes two gaps `schema_provisioning.py`'s engine-level `after_execute`
+    hook can't, by construction: the bootstrap `default` project is seeded
+    by the Alembic init migration on its own disposable migration-only
+    engine, before this app's own engine (and thus that hook) exists at
+    all, so it's never auto-provisioned; and this is a general safety net
+    for any other project that somehow slips through the hook (a
+    multi-row `Project` insert, for instance -- untested by the hook's own
+    `inserted_primary_key_rows` fallback path). Idempotent and cheap to
+    run on every boot regardless of how many projects already have a
+    schema: `provision_project_schema`'s DDL is all `IF NOT EXISTS`.
+    """
+    if db.dialect is not SupportedSQLDialect.POSTGRESQL:
+        return
+    async with db() as session:
+        project_ids = list(await session.scalars(sa.select(models.Project.id)))
+        connection = await session.connection()
+        for project_id in project_ids:
+            await provision_project_schema(connection, project_id)
 
 
 async def _ensure_oauth2_clients(db: DbSessionFactory) -> None:

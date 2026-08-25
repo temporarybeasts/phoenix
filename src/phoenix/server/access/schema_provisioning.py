@@ -60,25 +60,60 @@ def _project_role_name(project_id: int) -> str:
 
 
 #: Tables that move together into the new project schema -- their mutual
-#: FKs (Span -> Trace) should follow the table's own new schema. Anything
-#: else referenced (projects, project_sessions) stays in the shared schema.
-_PROJECT_SCOPED_TABLES = {"traces", "spans"}
+#: FKs should follow the table's own new schema. Anything else referenced
+#: (projects, users, generative_models) stays in the shared schema. Order
+#: matters below in `_project_scoped_metadata()`: each table's own FK
+#: targets must already be present in the target metadata (at whichever
+#: schema they resolve to) before that table is cloned, or `tometadata()`
+#: raises `NoReferencedTableError` trying to resolve them -- confirmed
+#: directly, this isn't just a style preference.
+_PROJECT_SCOPED_TABLES = {
+    "project_sessions",
+    "traces",
+    "spans",
+    "span_annotations",
+    "trace_annotations",
+    "project_session_annotations",
+    "document_annotations",
+    "span_costs",
+    "span_cost_details",
+}
+
+#: Shared (never project-scoped) tables that at least one project-scoped
+#: table has a real FK to -- must be present in the cloned target metadata,
+#: at the shared schema, for those FKs to resolve.
+_SHARED_REFERENCED_MODELS = (models.Project, models.User, models.GenerativeModel)
+
+#: Project-scoped models, in FK dependency order (each entry's own FK
+#: targets among this set precede it).
+_PROJECT_SCOPED_MODELS_IN_DEPENDENCY_ORDER = (
+    models.ProjectSession,  # -> projects
+    models.Trace,  # -> projects, project_sessions
+    models.Span,  # -> traces
+    models.SpanAnnotation,  # -> spans, users
+    models.TraceAnnotation,  # -> traces, users
+    models.ProjectSessionAnnotation,  # -> project_sessions, users
+    models.DocumentAnnotation,  # -> spans, users
+    models.SpanCost,  # -> spans, traces, generative_models
+    models.SpanCostDetail,  # -> span_costs
+)
 
 
 def _project_scoped_metadata(project_schema: str) -> MetaData:
-    """Project/ProjectSession copied at the shared (current) schema --
-    present only so Trace/Span's foreign keys into them compile against the
-    right schema, not recreated. Trace/Span copied at the new project
-    schema.
+    """Shared reference tables (`projects`/`users`/`generative_models`)
+    copied at the shared (current) schema -- present only so the
+    project-scoped tables' foreign keys into them compile against the
+    right schema, not recreated. The 9 project-scoped tables themselves
+    copied at the new project schema.
 
     `tometadata()`'s default FK-remapping assumes a table's *entire*
-    foreign-key graph moves with it to the new schema -- fine for Span's FK
-    to Trace (both move together), wrong for Trace's FKs to
-    `projects`/`project_sessions` (neither moves). `referred_schema_fn`
-    (SQLAlchemy's documented hook for exactly this mixed case) decides,
-    per FK, which schema the referenced table resolves to in the target
-    metadata: the new project schema for FKs within the moving set,
-    otherwise the original/shared schema.
+    foreign-key graph moves with it to the new schema -- fine for FKs
+    within the moving set (e.g. Span -> Trace, both move together), wrong
+    for FKs to shared tables (e.g. Trace -> `projects`, which never
+    moves). `referred_schema_fn` (SQLAlchemy's documented hook for exactly
+    this mixed case) decides, per FK, which schema the referenced table
+    resolves to in the target metadata: the new project schema for FKs
+    within the moving set, otherwise the original/shared schema.
     """
     shared_schema = get_env_database_schema()
 
@@ -99,14 +134,12 @@ def _project_scoped_metadata(project_schema: str) -> MetaData:
         return shared_schema if shared_schema is not None else BLANK_SCHEMA
 
     target = MetaData()
-    models.Project.__table__.tometadata(target, schema=shared_schema)
-    models.ProjectSession.__table__.tometadata(target, schema=shared_schema)
-    models.Trace.__table__.tometadata(
-        target, schema=project_schema, referred_schema_fn=_referred_schema_fn
-    )
-    models.Span.__table__.tometadata(
-        target, schema=project_schema, referred_schema_fn=_referred_schema_fn
-    )
+    for shared_model in _SHARED_REFERENCED_MODELS:
+        shared_model.__table__.tometadata(target, schema=shared_schema)
+    for scoped_model in _PROJECT_SCOPED_MODELS_IN_DEPENDENCY_ORDER:
+        scoped_model.__table__.tometadata(
+            target, schema=project_schema, referred_schema_fn=_referred_schema_fn
+        )
     return target
 
 
@@ -123,16 +156,20 @@ async def provision_project_schema(connection: AsyncConnection, project_id: int)
     schema_name = _project_schema_name(project_id)
     role_name = _project_role_name(project_id)
     shared_schema = get_env_database_schema()
-    shared_projects_ref = f'"{shared_schema}".projects' if shared_schema else "projects"
+
+    def _shared_ref(table_name: str) -> str:
+        return f'"{shared_schema}".{table_name}' if shared_schema else table_name
 
     await connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"'))
 
     target_metadata = _project_scoped_metadata(schema_name)
-    trace_table = target_metadata.tables[f"{schema_name}.traces"]
-    span_table = target_metadata.tables[f"{schema_name}.spans"]
+    scoped_tables = [
+        target_metadata.tables[f"{schema_name}.{model.__tablename__}"]
+        for model in _PROJECT_SCOPED_MODELS_IN_DEPENDENCY_ORDER
+    ]
     await connection.run_sync(
         lambda sync_conn: target_metadata.create_all(
-            sync_conn, tables=[trace_table, span_table], checkfirst=True
+            sync_conn, tables=scoped_tables, checkfirst=True
         )
     )
 
@@ -150,11 +187,17 @@ async def provision_project_schema(connection: AsyncConnection, project_id: int)
         )
     )
     await connection.execute(text(f'GRANT USAGE ON SCHEMA "{schema_name}" TO "{role_name}"'))
+    scoped_table_refs = ", ".join(
+        f'"{schema_name}".{model.__tablename__}'
+        for model in _PROJECT_SCOPED_MODELS_IN_DEPENDENCY_ORDER
+    )
+    # UPDATE/DELETE (not just SELECT/INSERT): the cumulative-count updates
+    # ingest already does today, retention sweeps, and annotation edits all
+    # need them once real write-routing lands -- adding the grant now so
+    # provisioning doesn't need touching again for that later, narrower
+    # change.
     await connection.execute(
-        text(
-            f'GRANT SELECT, INSERT ON "{schema_name}".traces, "{schema_name}".spans '
-            f'TO "{role_name}"'
-        )
+        text(f'GRANT SELECT, INSERT, UPDATE, DELETE ON {scoped_table_refs} TO "{role_name}"')
     )
     # The `id` columns are Postgres SERIAL (an implicit sequence + a column
     # DEFAULT nextval(...)), and a sequence's privileges are independent of
@@ -166,12 +209,52 @@ async def provision_project_schema(connection: AsyncConnection, project_id: int)
     await connection.execute(
         text(f'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA "{schema_name}" TO "{role_name}"')
     )
-    # Read-only grant on the shared catalog table so a single-project query
-    # can still join in the project's own name/metadata (FK enforcement
-    # itself doesn't require this -- Postgres checks FK constraints with
-    # the referenced table owner's privileges, not the inserting role's).
-    await connection.execute(text(f'GRANT SELECT ON {shared_projects_ref} TO "{role_name}"'))
+    # Read-only grants on the shared tables a project-scoped query can join
+    # into (FK enforcement itself doesn't require this -- Postgres checks FK
+    # constraints with the referenced table's owner's privileges, not the
+    # inserting role's).
+    shared_refs = ", ".join(_shared_ref(model.__tablename__) for model in _SHARED_REFERENCED_MODELS)
+    await connection.execute(text(f'GRANT SELECT ON {shared_refs} TO "{role_name}"'))
     await connection.execute(text(f'GRANT "{role_name}" TO current_user'))
+
+
+async def deprovision_project_schema(connection: AsyncConnection, project_id: int) -> None:
+    """Idempotent -- safe to call even if provisioning never ran (e.g. a
+    project created and deleted before the schema-per-project rollout, or
+    one whose provisioning previously failed). Called after the shared-schema
+    `Project` row delete has already succeeded; callers should log loudly on
+    failure here rather than let it block the user-facing delete, since the
+    project row is already gone either way.
+    """
+    if connection.dialect.name != "postgresql":
+        return
+
+    schema_name = _project_schema_name(project_id)
+    role_name = _project_role_name(project_id)
+
+    await connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE'))
+    # `DROP ROLE` refuses outright if the role still holds privileges
+    # anywhere else in the database -- and it does: `provision_project_schema`
+    # grants it SELECT on the shared tables it can join into (projects,
+    # users, generative_models), which live outside the schema just dropped
+    # above. `DROP OWNED BY` revokes those (and drops anything the role
+    # itself owns, though it owns nothing here) so the role has nothing left
+    # to block the drop. Confirmed directly: omitting this step raises
+    # `DependentObjectsStillExistError` on a real provisioned role.
+    await connection.execute(
+        text(
+            f"""
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT FROM pg_roles WHERE rolname = '{role_name}') THEN
+                    EXECUTE 'DROP OWNED BY "{role_name}"';
+                    EXECUTE 'DROP ROLE "{role_name}"';
+                END IF;
+            END
+            $$;
+            """
+        )
+    )
 
 
 @contextlib.asynccontextmanager

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from phoenix.db import models
 from phoenix.db.helpers import SupportedSQLDialect
 from phoenix.db.insertion.helpers import OnConflict, insert_on_conflict
+from phoenix.server.access.schema_provisioning import provision_project_schema
 from phoenix.trace.attributes import get_attribute_value
 from phoenix.trace.schemas import Span, SpanKind, SpanStatusCode
 
@@ -56,6 +57,14 @@ async def insert_span(
                 insert(models.Project).values(name=project_name).returning(models.Project.id)
             )
             assert project_rowid is not None
+            # Inline, same connection/transaction: the post-commit hook
+            # (app.py's `_db()` factory) also provisions this project's
+            # schema, but only after this transaction commits -- too late
+            # for the Trace/Span this same call is about to persist, once
+            # real per-project write routing lands (Stage 4b-2d).
+            # `provision_project_schema` is idempotent, so the later
+            # post-commit call is a harmless no-op for this project.
+            await provision_project_schema(await session.connection(), project_rowid)
         trace.project_rowid = project_rowid
         session.add(trace)
 

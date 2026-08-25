@@ -1,3 +1,5 @@
+import logging
+
 import strawberry
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError as PostgreSQLIntegrityError
@@ -9,6 +11,7 @@ from strawberry.types import Info
 
 from phoenix.config import DEFAULT_PROJECT_NAME
 from phoenix.db import models
+from phoenix.server.access.schema_provisioning import deprovision_project_schema
 from phoenix.server.api.auth import IsNotReadOnly, IsNotViewer
 from phoenix.server.api.context import Context
 from phoenix.server.api.exceptions import BadRequest, Conflict
@@ -19,6 +22,8 @@ from phoenix.server.api.queries import Query
 from phoenix.server.api.types.node import from_global_id_with_expected_type
 from phoenix.server.api.types.Project import Project, to_gql_project
 from phoenix.server.dml_event import ProjectDeleteEvent, ProjectInsertEvent, SpanDeleteEvent
+
+logger = logging.getLogger(__name__)
 
 
 @strawberry.type
@@ -57,7 +62,8 @@ class ProjectMutationMixin:
     @strawberry.mutation(permission_classes=[IsNotReadOnly, IsNotViewer])  # type: ignore
     async def delete_project(self, info: Info[Context, None], id: GlobalID) -> Query:
         project_id = from_global_id_with_expected_type(global_id=id, expected_type_name="Project")
-        async with info.context.db() as session:
+        db = info.context.db
+        async with db() as session:
             project = await session.scalar(
                 select(models.Project)
                 .where(models.Project.id == project_id)
@@ -68,6 +74,17 @@ class ProjectMutationMixin:
             if project.name == DEFAULT_PROJECT_NAME:
                 raise ValueError(f"Cannot delete the {DEFAULT_PROJECT_NAME} project")
             await session.delete(project)
+        # Schema-per-project spike: drop the project's schema/role only after
+        # the shared-schema Project row delete has committed. Best-effort --
+        # the project row is already gone either way, so a failure here
+        # shouldn't surface as a failed mutation, just an orphaned schema for
+        # an operator to clean up.
+        if db.engine is not None:
+            try:
+                async with db.engine.begin() as connection:
+                    await deprovision_project_schema(connection, project_id)
+            except Exception:
+                logger.exception(f"Failed to deprovision schema for deleted project {project_id}")
         info.context.event_queue.put(ProjectDeleteEvent((project_id,)))
         return Query()
 

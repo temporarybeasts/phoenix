@@ -1,3 +1,4 @@
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
@@ -12,6 +13,7 @@ from phoenix.db.helpers import (
     exclude_dataset_evaluator_projects,
     exclude_experiment_projects,
 )
+from phoenix.server.access.schema_provisioning import deprovision_project_schema
 from phoenix.server.api.routers.v1.models import V1RoutesBaseModel
 from phoenix.server.api.routers.v1.utils import (
     PaginatedResponseBody,
@@ -21,6 +23,8 @@ from phoenix.server.api.routers.v1.utils import (
 )
 from phoenix.server.api.types.Project import Project as ProjectNodeType
 from phoenix.server.authorization import is_not_locked, require_admin
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["projects"])
 
@@ -309,7 +313,8 @@ async def delete_project(
     Raises:
         HTTPException: If the project identifier format is invalid, the project is not found, or it's the default project.
     """  # noqa: E501
-    async with request.app.state.db() as session:
+    db = request.app.state.db
+    async with db() as session:
         project = await get_project_by_identifier(session, project_identifier)
 
         # The default project must not be deleted - it's forbidden
@@ -319,7 +324,19 @@ async def delete_project(
                 detail="The default project cannot be deleted",
             )
 
+        project_id = project.id
         await session.delete(project)
+    # Schema-per-project spike: drop the project's schema/role only after the
+    # shared-schema Project row delete has committed. Best-effort -- the
+    # project row is already gone either way, so a failure here shouldn't
+    # surface as a failed delete to the caller, just an orphaned schema for
+    # an operator to clean up.
+    if db.engine is not None:
+        try:
+            async with db.engine.begin() as connection:
+                await deprovision_project_schema(connection, project_id)
+        except Exception:
+            logger.exception(f"Failed to deprovision schema for deleted project {project_id}")
     return None
 
 

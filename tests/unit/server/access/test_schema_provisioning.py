@@ -1,14 +1,21 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import insert, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from phoenix.db import models
+from phoenix.db.facilitator import _ensure_project_schemas_provisioned
+from phoenix.db.insertion.span import insert_span
 from phoenix.server.access.schema_provisioning import (
+    _project_role_name,
+    _project_schema_name,
+    deprovision_project_schema,
     provision_project_schema,
     schema_scoped_connection,
 )
+from phoenix.server.types import DbSessionFactory
+from phoenix.trace.schemas import Span, SpanContext, SpanKind, SpanStatusCode
 
 pytestmark = pytest.mark.postgres_only
 
@@ -135,3 +142,155 @@ async def test_cross_project_role_still_denied_after_token_fix(
     async with schema_scoped_connection(postgresql_engine, project_a) as conn:
         with pytest.raises(Exception, match="permission denied"):
             await conn.execute(text(f'SELECT * FROM "project_{project_b}".traces'))
+
+
+async def test_ingest_auto_created_project_schema_provisioned_inline(
+    db: DbSessionFactory,
+) -> None:
+    """Regression test for Stage 4b-2b's chicken-and-egg timing fix:
+    `insert_span`'s brand-new-project branch must provision that project's
+    schema in the SAME connection/transaction as the Project insert, not
+    rely solely on the post-commit hook (`app.py`'s `_db()` factory), which
+    runs too late for the Trace/Span this same call is about to persist
+    once real per-project write routing lands (Stage 4b-2d). Checked via
+    the *same*, still-uncommitted session's own connection -- a separate
+    connection would never see uncommitted DDL regardless of timing, so
+    seeing it here specifically confirms the inline call happened.
+    """
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    project_name = "inline-provisioning-test"
+    async with db() as session:
+        event = await insert_span(
+            session,
+            Span(
+                name="root",
+                context=SpanContext(trace_id="trace-1", span_id="span-1"),
+                span_kind=SpanKind.CHAIN,
+                parent_id=None,
+                start_time=start,
+                end_time=start + timedelta(seconds=1),
+                status_code=SpanStatusCode.OK,
+                status_message="",
+                attributes={},
+                events=[],
+                conversation=None,
+            ),
+            project_name,
+        )
+        assert event is not None
+        schema_name = _project_schema_name(event.project_rowid)
+        exists = await session.scalar(
+            text("SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = :name)"),
+            {"name": schema_name},
+        )
+        assert exists is True
+
+
+async def test_reconciliation_pass_provisions_unprovisioned_projects(
+    db: DbSessionFactory,
+    postgresql_engine: AsyncEngine,
+) -> None:
+    """Regression test for Stage 4b-2b's bootstrap-project-and-safety-net
+    fix: a `Project` row that exists without a schema (e.g. the bootstrap
+    `default` project, seeded by the Alembic init migration on its own
+    disposable engine before `schema_provisioning.py`'s `after_execute`
+    hook exists) must get provisioned by `_ensure_project_schemas_provisioned`,
+    the reconciliation pass wired into `Facilitator`.
+
+    Inserts the Project row directly against the raw `postgresql_engine`
+    connection rather than through the `db` fixture: `db` for this dialect
+    *is* `app.py`'s real `_db()` factory (imported directly in conftest.py),
+    which already drains `new_project_ids_var` and auto-provisions on
+    commit -- the same hook production uses. Going through it here would
+    provision the schema before this test ever calls the reconciliation
+    pass, defeating the point. Inserting via the bare engine instead means
+    the `after_execute` capture hook still fires (it's engine-level,
+    unconditional) but has no `_db()`-scoped contextvar to drain into, so
+    nothing auto-provisions -- the row genuinely has no schema until
+    `_ensure_project_schemas_provisioned` runs.
+    """
+    async with postgresql_engine.begin() as conn:
+        project_id = await conn.scalar(
+            insert(models.Project)
+            .values(name="unprovisioned-until-reconciled")
+            .returning(models.Project.id)
+        )
+    assert project_id is not None
+    schema_name = _project_schema_name(project_id)
+
+    async with db() as session:
+        exists_before = await session.scalar(
+            text("SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = :name)"),
+            {"name": schema_name},
+        )
+    assert exists_before is False
+
+    await _ensure_project_schemas_provisioned(db)
+
+    async with db() as session:
+        exists_after = await session.scalar(
+            text("SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = :name)"),
+            {"name": schema_name},
+        )
+    assert exists_after is True
+
+
+async def test_deprovision_drops_schema_and_role(
+    postgresql_engine: AsyncEngine,
+) -> None:
+    """Regression test for Stage 4b-2b's Task #4: `deprovision_project_schema`
+    must drop both the project's schema (and everything in it, via CASCADE)
+    and its dedicated role, mirroring what `provision_project_schema` created.
+    The role is also granted to `current_user` (see `provision_project_schema`'s
+    final `GRANT ... TO current_user`) -- confirming `DROP ROLE` still
+    succeeds proves that plain membership grant doesn't block the drop.
+    """
+    project_id = await _create_project(postgresql_engine, "deprovision-test")
+    schema_name = _project_schema_name(project_id)
+    role_name = _project_role_name(project_id)
+
+    async with postgresql_engine.connect() as conn:
+        assert await conn.scalar(
+            text("SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = :name)"),
+            {"name": schema_name},
+        )
+        assert await conn.scalar(
+            text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :name)"),
+            {"name": role_name},
+        )
+
+    async with postgresql_engine.connect() as conn:
+        await deprovision_project_schema(conn, project_id)
+        await conn.commit()
+
+    async with postgresql_engine.connect() as conn:
+        schema_exists = await conn.scalar(
+            text("SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = :name)"),
+            {"name": schema_name},
+        )
+        role_exists = await conn.scalar(
+            text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :name)"),
+            {"name": role_name},
+        )
+    assert schema_exists is False
+    assert role_exists is False
+
+
+async def test_deprovision_is_idempotent_for_never_provisioned_project(
+    postgresql_engine: AsyncEngine,
+) -> None:
+    """A project deleted before it was ever provisioned (or whose
+    provisioning previously failed) must not make deletion itself fail --
+    `deprovision_project_schema` uses `IF EXISTS` throughout specifically
+    so calling it for a schema/role that were never created is a no-op,
+    not an error.
+    """
+    async with postgresql_engine.begin() as conn:
+        project_id = await conn.scalar(
+            insert(models.Project).values(name="never-provisioned").returning(models.Project.id)
+        )
+    assert project_id is not None
+
+    async with postgresql_engine.connect() as conn:
+        await deprovision_project_schema(conn, project_id)
+        await conn.commit()
