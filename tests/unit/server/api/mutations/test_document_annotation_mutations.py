@@ -302,7 +302,7 @@ class TestDocumentAnnotationMutations:
         assert patched["explanation"] == "patched"  # Unchanged from earlier patch
 
         # Patch nonexistent annotation fails
-        fake_id = str(GlobalID("DocumentAnnotation", "99999"))
+        fake_id = str(GlobalID("DocumentAnnotation", "1:99999"))  # valid project, missing row
         res = await gql_client.execute(
             PATCH_MUTATION, {"input": [{"annotationId": fake_id, "label": "x"}]}
         )
@@ -332,7 +332,7 @@ class TestDocumentAnnotationMutations:
         assert {d["id"] for d in deleted} == {ann1_id, ann2_id}
 
         # Delete nonexistent fails
-        fake_id = str(GlobalID("DocumentAnnotation", "99999"))
+        fake_id = str(GlobalID("DocumentAnnotation", "1:99999"))  # valid project, missing row
         res = await gql_client.execute(DELETE_MUTATION, {"input": {"annotationIds": [fake_id]}})
         assert res.errors and "Could not find" in res.errors[0].message
 

@@ -6,7 +6,7 @@ from sqlalchemy import insert, select
 from strawberry.relay import GlobalID
 
 from phoenix.db import models
-from phoenix.server.api.types.node import from_global_id_with_expected_type
+from phoenix.server.api.types.node import from_project_scoped_global_id_with_expected_type
 from phoenix.server.types import DbSessionFactory
 from tests.unit.graphql import AsyncGraphQLClient
 
@@ -100,7 +100,9 @@ async def test_annotating_a_span(
     assert not response.errors
     assert (data := response.data) is not None
     annotation_gid = GlobalID.from_id(data["createSpanAnnotations"]["spanAnnotations"][0]["id"])
-    annotation_id = from_global_id_with_expected_type(annotation_gid, "SpanAnnotation")
+    _, annotation_id = from_project_scoped_global_id_with_expected_type(
+        annotation_gid, "SpanAnnotation"
+    )
     async with db() as session:
         orm_annotation = await session.scalar(
             select(models.SpanAnnotation).where(models.SpanAnnotation.id == annotation_id)

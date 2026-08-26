@@ -6,7 +6,7 @@ import pytest
 from strawberry.relay.types import GlobalID
 
 from phoenix.db import models
-from phoenix.server.api.types.node import from_global_id_with_expected_type
+from phoenix.server.api.types.node import from_project_scoped_global_id_with_expected_type
 from phoenix.server.types import DbSessionFactory
 from tests.unit.graphql import AsyncGraphQLClient
 
@@ -546,7 +546,12 @@ class TestProjectSessionAnnotationMutations:
         # B2. Update nonexistent annotation should error
         nonexistent_patch_input = {
             "input": {
-                "id": str(GlobalID("ProjectSessionAnnotation", "999999")),
+                "id": str(
+                    GlobalID(
+                        "ProjectSessionAnnotation",
+                        f"{project_session_data.project_id}:999999",
+                    )
+                ),
                 "name": "should_fail",
                 "label": "DUMMY_LABEL",  # Provide label to satisfy validation
                 "metadata": {},
@@ -612,12 +617,13 @@ class TestProjectSessionAnnotationMutations:
 
         # Verify in database that score is actually null
         async with db() as session:
+            _, annotation_rowid = from_project_scoped_global_id_with_expected_type(
+                GlobalID.from_id(created_omitted_identifier_annotation["id"]),
+                "ProjectSessionAnnotation",
+            )
             db_annotation = await session.get(
                 models.ProjectSessionAnnotation,
-                from_global_id_with_expected_type(
-                    GlobalID.from_id(created_omitted_identifier_annotation["id"]),
-                    "ProjectSessionAnnotation",
-                ),
+                annotation_rowid,
             )
             assert db_annotation is not None
             assert db_annotation.score is None
@@ -943,7 +949,14 @@ class TestProjectSessionAnnotationMutations:
         # C2. Delete nonexistent annotation should error
         nonexistent_delete_response = await gql_client.execute(
             self.QUERY,
-            {"id": str(GlobalID("ProjectSessionAnnotation", "999999"))},
+            {
+                "id": str(
+                    GlobalID(
+                        "ProjectSessionAnnotation",
+                        f"{project_session_data.project_id}:999999",
+                    )
+                )
+            },
             operation_name="DeleteProjectSessionAnnotation",
         )
         assert nonexistent_delete_response.errors

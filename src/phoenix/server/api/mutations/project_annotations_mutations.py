@@ -8,6 +8,7 @@ from sqlalchemy.orm import InstrumentedAttribute
 from strawberry import Info
 
 from phoenix.db import models
+from phoenix.server.access.schema_provisioning import project_scoped_session
 from phoenix.server.api.auth import IsAdminIfAuthEnabled, IsNotReadOnly, IsNotViewer
 from phoenix.server.api.context import Context
 from phoenix.server.api.exceptions import BadRequest, NotFound
@@ -101,6 +102,21 @@ async def _delete_project_annotations_by_name(
     except ValueError:
         raise BadRequest(f"Invalid project ID: {input.project_id}")
 
+    # Already single-project by construction (input.project_id is an
+    # explicit, required field) -- a mechanical swap to project_scoped_session,
+    # same shape as project_mutations.py's clear_project (Stage 4b-2e).
+    # Existence is checked via a plain (unscoped) session first: Project
+    # itself is a shared, never-project-scoped table, but a nonexistent
+    # project_rowid also has no provisioned schema/role, so opening a
+    # scoped session for it before confirming it exists would surface a
+    # confusing "role does not exist" error instead of a clean NotFound.
+    async with info.context.db() as session:
+        project_exists = await session.scalar(
+            select(models.Project.id).where(models.Project.id == project_rowid)
+        )
+    if project_exists is None:
+        raise NotFound(f"Could not find project with ID: {input.project_id}")
+
     id_select = _apply_time_range(
         target_type.build_id_select(project_rowid, input.annotation_name),
         input,
@@ -112,12 +128,7 @@ async def _delete_project_annotations_by_name(
         .where(target_type.model.id.in_(id_select))
         .returning(target_type.model.id)
     )
-    async with info.context.db() as session:
-        project_exists = await session.scalar(
-            select(models.Project.id).where(models.Project.id == project_rowid)
-        )
-        if project_exists is None:
-            raise NotFound(f"Could not find project with ID: {input.project_id}")
+    async with project_scoped_session(info.context.db, project_rowid) as session:
         deleted_ids = tuple(await session.scalars(stmt))
 
     if deleted_ids:

@@ -6,7 +6,7 @@ from sqlalchemy import insert, select
 from strawberry.relay import GlobalID
 
 from phoenix.db import models
-from phoenix.server.api.types.node import from_global_id_with_expected_type
+from phoenix.server.api.types.node import from_project_scoped_global_id_with_expected_type
 from phoenix.server.types import DbSessionFactory
 from tests.unit.graphql import AsyncGraphQLClient
 
@@ -108,7 +108,9 @@ async def test_annotating_a_trace(
     assert created_annotation["createdAt"] is not None
     assert created_annotation["updatedAt"] is not None
     annotation_gid = GlobalID.from_id(created_annotation["id"])
-    annotation_id = from_global_id_with_expected_type(annotation_gid, "TraceAnnotation")
+    _, annotation_id = from_project_scoped_global_id_with_expected_type(
+        annotation_gid, "TraceAnnotation"
+    )
     async with db() as session:
         orm_annotation = await session.scalar(
             select(models.TraceAnnotation).where(models.TraceAnnotation.id == annotation_id)

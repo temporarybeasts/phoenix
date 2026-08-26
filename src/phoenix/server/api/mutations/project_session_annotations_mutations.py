@@ -21,7 +21,7 @@ from phoenix.server.api.input_types.UpdateAnnotationInput import UpdateAnnotatio
 from phoenix.server.api.queries import Query
 from phoenix.server.api.types.AnnotationSource import AnnotationSource
 from phoenix.server.api.types.node import (
-    from_global_id_with_expected_type,
+    from_project_scoped_global_id_with_expected_type,
     parse_project_scoped_node_id,
 )
 from phoenix.server.api.types.ProjectSessionAnnotation import ProjectSessionAnnotation
@@ -113,11 +113,15 @@ class ProjectSessionAnnotationMutationMixin:
             user_id = int(user.identity)
 
         try:
-            id_ = from_global_id_with_expected_type(input.id, "ProjectSessionAnnotation")
+            # ProjectSessionAnnotation's node id is compound
+            # "<project_id>:<row_id>" (Stage 4b-2f); trusted directly.
+            project_id, id_ = from_project_scoped_global_id_with_expected_type(
+                input.id, "ProjectSessionAnnotation"
+            )
         except ValueError:
             raise BadRequest(f"Invalid session annotation ID: {input.id}")
 
-        async with info.context.db() as session:
+        async with project_scoped_session(info.context.db, project_id) as session:
             if not (anno := await session.get(models.ProjectSessionAnnotation, id_)):
                 raise NotFound(f"Could not find session annotation with ID: {input.id}")
             if anno.user_id != user_id:
@@ -138,16 +142,10 @@ class ProjectSessionAnnotationMutationMixin:
             except (PostgreSQLIntegrityError, SQLiteIntegrityError) as e:
                 raise Conflict(f"Error updating annotation: {e}")
 
-            session_project_id = await session.scalar(
-                select(models.ProjectSession.project_id).where(
-                    models.ProjectSession.id == anno.project_session_id
-                )
-            )
-
         info.context.event_queue.put(ProjectSessionAnnotationInsertEvent((anno.id,)))
         return ProjectSessionAnnotationMutationPayload(
             project_session_annotation=ProjectSessionAnnotation(
-                id=anno.id, project_id=session_project_id, db_record=anno
+                id=anno.id, project_id=project_id, db_record=anno
             ),
             query=Query(),
         )
@@ -157,7 +155,11 @@ class ProjectSessionAnnotationMutationMixin:
         self, info: Info[Context, None], id: GlobalID
     ) -> ProjectSessionAnnotationMutationPayload:
         try:
-            id_ = from_global_id_with_expected_type(id, "ProjectSessionAnnotation")
+            # ProjectSessionAnnotation's node id is compound
+            # "<project_id>:<row_id>" (Stage 4b-2f); trusted directly.
+            project_id, id_ = from_project_scoped_global_id_with_expected_type(
+                id, "ProjectSessionAnnotation"
+            )
         except ValueError:
             raise BadRequest(f"Invalid session annotation ID: {id}")
 
@@ -168,7 +170,7 @@ class ProjectSessionAnnotationMutationMixin:
             user_id = int(user.identity)
             user_is_admin = user.is_admin
 
-        async with info.context.db() as session:
+        async with project_scoped_session(info.context.db, project_id) as session:
             if not (anno := await session.get(models.ProjectSessionAnnotation, id_)):
                 raise NotFound(f"Could not find session annotation with ID: {id}")
 
@@ -178,16 +180,10 @@ class ProjectSessionAnnotationMutationMixin:
                     "the current user is not an admin."
                 )
 
-            session_project_id = await session.scalar(
-                select(models.ProjectSession.project_id).where(
-                    models.ProjectSession.id == anno.project_session_id
-                )
-            )
-
             await session.delete(anno)
 
         deleted_gql_annotation = ProjectSessionAnnotation(
-            id=anno.id, project_id=session_project_id, db_record=anno
+            id=anno.id, project_id=project_id, db_record=anno
         )
         info.context.event_queue.put(ProjectSessionAnnotationDeleteEvent((id_,)))
         return ProjectSessionAnnotationMutationPayload(

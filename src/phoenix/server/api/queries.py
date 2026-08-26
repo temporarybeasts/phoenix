@@ -1047,7 +1047,21 @@ class Query:
                 experiment_rowid=experiment_rowid,
                 dataset_example_rowid=dataset_example_rowid,
             )
-        if type_name in (Trace.__name__, Span.__name__, ProjectSession.__name__):
+        if type_name in (
+            Trace.__name__,
+            Span.__name__,
+            ProjectSession.__name__,
+            SpanAnnotation.__name__,
+            TraceAnnotation.__name__,
+        ):
+            # Stage 4b-2f: SpanAnnotation/TraceAnnotation joined this
+            # compound-id group alongside Trace/Span/ProjectSession (Stage
+            # 4b-1) -- the embedded project_id is trusted directly instead
+            # of re-derived via a join, the same decision made for the
+            # annotation mutations. DocumentAnnotation/ProjectSessionAnnotation
+            # also carry compound ids now but were never reachable through
+            # this dispatcher in the first place (pre-existing gap, not
+            # touched here).
             try:
                 project_id, row_id = parse_project_scoped_node_id(global_id.node_id)
             except ValueError:
@@ -1056,8 +1070,12 @@ class Query:
                 return Trace(id=row_id, project_id=project_id)
             elif type_name == Span.__name__:
                 return Span(id=row_id, project_id=project_id)
-            else:
+            elif type_name == ProjectSession.__name__:
                 return ProjectSession(id=row_id, project_id=project_id)
+            elif type_name == SpanAnnotation.__name__:
+                return SpanAnnotation(id=row_id, project_id=project_id)
+            else:
+                return TraceAnnotation(id=row_id, project_id=project_id)
 
         if type_name == Secret.__name__:
             return Secret(id=global_id.node_id)
@@ -1115,38 +1133,6 @@ class Query:
             return PromptVersionTag(id=node_id)
         elif type_name == ProjectTraceRetentionPolicy.__name__:
             return ProjectTraceRetentionPolicy(id=node_id)
-        elif type_name == SpanAnnotation.__name__:
-            # project_rowid fetched alongside the row here -- only correct
-            # while ingest still writes into the shared schema (see the same
-            # caveat on get_span_by_otel_id above); needs the OTel-ID index
-            # (Stage 4b-3) once Stage 4b-2 rewires ingest per-project.
-            async with info.context.db.read() as session:
-                span_annotation_project_id = await session.scalar(
-                    select(models.Trace.project_rowid)
-                    .join(models.Span, models.Span.trace_rowid == models.Trace.id)
-                    .join(
-                        models.SpanAnnotation,
-                        models.SpanAnnotation.span_rowid == models.Span.id,
-                    )
-                    .where(models.SpanAnnotation.id == node_id)
-                )
-            if span_annotation_project_id is None:
-                raise NotFound(f"Unknown span annotation: {id}")
-            return SpanAnnotation(id=node_id, project_id=span_annotation_project_id)
-        elif type_name == TraceAnnotation.__name__:
-            # Same temporary caveat as SpanAnnotation above.
-            async with info.context.db.read() as session:
-                trace_annotation_project_id = await session.scalar(
-                    select(models.Trace.project_rowid)
-                    .join(
-                        models.TraceAnnotation,
-                        models.TraceAnnotation.trace_rowid == models.Trace.id,
-                    )
-                    .where(models.TraceAnnotation.id == node_id)
-                )
-            if trace_annotation_project_id is None:
-                raise NotFound(f"Unknown trace annotation: {id}")
-            return TraceAnnotation(id=node_id, project_id=trace_annotation_project_id)
         elif type_name == GenerativeModel.__name__:
             return GenerativeModel(id=node_id)
         elif type_name == LLMEvaluator.__name__:

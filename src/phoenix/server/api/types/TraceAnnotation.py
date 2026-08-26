@@ -3,7 +3,7 @@ from math import isfinite
 from typing import TYPE_CHECKING, Annotated, Optional
 
 import strawberry
-from strawberry.relay import Node, NodeID
+from strawberry.relay import Node
 from strawberry.scalars import JSON
 from strawberry.types import Info
 
@@ -20,7 +20,10 @@ if TYPE_CHECKING:
 
 @strawberry.type
 class TraceAnnotation(Node):
-    id: NodeID[int]
+    # Schema-per-project (Stage 4b-2f): compound "<project_id>:<row_id>"
+    # GlobalID -- see the matching comment on
+    # phoenix.server.api.types.SpanAnnotation.SpanAnnotation.
+    id: strawberry.Private[int]
     # Schema-per-project (Stage 4b-1): see the matching comment on
     # phoenix.server.api.types.SpanAnnotation.SpanAnnotation.
     project_id: strawberry.Private[int]
@@ -29,6 +32,10 @@ class TraceAnnotation(Node):
     def __post_init__(self) -> None:
         if self.db_record and self.id != self.db_record.id:
             raise ValueError("TraceAnnotation ID mismatch")
+
+    @classmethod
+    def resolve_id(cls, root: "TraceAnnotation", *, info: Info) -> str:
+        return f"{root.project_id}:{root.id}"
 
     @strawberry.field(description="Name of the annotation, e.g. 'helpfulness' or 'relevance'.")  # type: ignore
     async def name(

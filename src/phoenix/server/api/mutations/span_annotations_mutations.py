@@ -22,7 +22,7 @@ from phoenix.server.api.queries import Query
 from phoenix.server.api.types.AnnotationSource import AnnotationSource
 from phoenix.server.api.types.AnnotatorKind import AnnotatorKind
 from phoenix.server.api.types.node import (
-    from_global_id_with_expected_type,
+    from_project_scoped_global_id_with_expected_type,
     parse_project_scoped_node_id,
 )
 from phoenix.server.api.types.SpanAnnotation import SpanAnnotation
@@ -257,81 +257,87 @@ class SpanAnnotationMutationMixin:
         if "user" in request.scope and isinstance((user := info.context.user), PhoenixUser):
             user_id = int(user.identity)
 
-        patch_by_id = {}
+        # SpanAnnotation's node id is compound "<project_id>:<row_id>"
+        # (Stage 4b-2f); the embedded project_id is trusted directly, same
+        # decision already made for the create-mutations in Stage 4b-2d.
+        # Grouped by project rather than rejecting multi-project batches,
+        # matching create_span_annotations -- but unlike that single flat
+        # shared-schema table before it, each project's group now commits
+        # in its own transaction: a later group's validation failure does
+        # NOT roll back an earlier group's already-applied patches. This is
+        # a real, accepted behavior difference from the flag-off path
+        # (which was one shared-table transaction for the whole batch).
+        # Keyed by (project_id, row_id), not bare row_id: row ids are only
+        # unique within a project's own schema once project-scoped storage
+        # is on, so two different annotations in two different projects can
+        # legitimately share the same numeric id -- a bare-id key would
+        # both misdetect that as a duplicate and, worse, silently clobber
+        # one project's patch with the other's in the lookup dict.
+        patch_by_key: dict[tuple[int, int], PatchAnnotationInput] = {}
         for patch in input:
             try:
-                span_annotation_id = from_global_id_with_expected_type(
+                project_id, span_annotation_id = from_project_scoped_global_id_with_expected_type(
                     patch.annotation_id, SpanAnnotation.__name__
                 )
             except ValueError:
                 raise BadRequest(f"Invalid span annotation ID: {patch.annotation_id}")
-            if span_annotation_id in patch_by_id:
-                raise BadRequest(f"Duplicate patch for span annotation ID: {span_annotation_id}")
-            patch_by_id[span_annotation_id] = patch
+            key = (project_id, span_annotation_id)
+            if key in patch_by_key:
+                raise BadRequest(f"Duplicate patch for span annotation ID: {patch.annotation_id}")
+            patch_by_key[key] = patch
 
-        async with info.context.db() as session:
-            span_annotations_by_id = {}
-            for span_annotation in await session.scalars(
-                select(models.SpanAnnotation).where(
-                    models.SpanAnnotation.id.in_(patch_by_id.keys())
-                )
-            ):
-                if span_annotation.user_id != user_id:
-                    raise Unauthorized(
-                        "At least one span annotation is not associated with the current user."
+        annotation_ids_by_project: dict[int, list[int]] = defaultdict(list)
+        for project_id, annotation_id in patch_by_key:
+            annotation_ids_by_project[project_id].append(annotation_id)
+
+        patched_annotations: list[SpanAnnotation] = []
+        for project_id, group_ids in annotation_ids_by_project.items():
+            async with project_scoped_session(info.context.db, project_id) as session:
+                span_annotations_by_id: dict[int, models.SpanAnnotation] = {}
+                for span_annotation in await session.scalars(
+                    select(models.SpanAnnotation).where(models.SpanAnnotation.id.in_(group_ids))
+                ):
+                    if span_annotation.user_id != user_id:
+                        raise Unauthorized(
+                            "At least one span annotation is not associated with the current user."
+                        )
+                    span_annotations_by_id[span_annotation.id] = span_annotation
+                missing_span_annotation_ids = set(group_ids) - set(span_annotations_by_id.keys())
+                if missing_span_annotation_ids:
+                    raise NotFound(
+                        f"Could not find span annotations with IDs: {missing_span_annotation_ids}"
                     )
-                span_annotations_by_id[span_annotation.id] = span_annotation
-            missing_span_annotation_ids = set(patch_by_id.keys()) - set(
-                span_annotations_by_id.keys()
-            )
-            if missing_span_annotation_ids:
-                raise NotFound(
-                    f"Could not find span annotations with IDs: {missing_span_annotation_ids}"
-                )
-            for span_annotation_id, patch in patch_by_id.items():
-                span_annotation = span_annotations_by_id[span_annotation_id]
-                if patch.name:
-                    span_annotation.name = patch.name
-                if patch.annotator_kind:
-                    span_annotation.annotator_kind = patch.annotator_kind.value
-                if patch.label is not UNSET:
-                    span_annotation.label = patch.label
-                if patch.score is not UNSET:
-                    span_annotation.score = patch.score
-                if patch.explanation is not UNSET:
-                    span_annotation.explanation = patch.explanation
-                if patch.metadata is not UNSET:
-                    assert isinstance(patch.metadata, dict)
-                    span_annotation.metadata_ = patch.metadata
-                if patch.identifier is not UNSET:
-                    span_annotation.identifier = patch.identifier or ""
-                if patch.source:
-                    span_annotation.source = patch.source.value
-                session.add(span_annotation)
-
-            project_id_by_span_rowid = {
-                row.id: row.project_rowid
-                for row in await session.execute(
-                    select(models.Span.id, models.Trace.project_rowid)
-                    .join(models.Trace, models.Span.trace_rowid == models.Trace.id)
-                    .where(
-                        models.Span.id.in_(
-                            {sa.span_rowid for sa in span_annotations_by_id.values()}
+                for annotation_id in group_ids:
+                    span_annotation = span_annotations_by_id[annotation_id]
+                    patch = patch_by_key[(project_id, annotation_id)]
+                    if patch.name:
+                        span_annotation.name = patch.name
+                    if patch.annotator_kind:
+                        span_annotation.annotator_kind = patch.annotator_kind.value
+                    if patch.label is not UNSET:
+                        span_annotation.label = patch.label
+                    if patch.score is not UNSET:
+                        span_annotation.score = patch.score
+                    if patch.explanation is not UNSET:
+                        span_annotation.explanation = patch.explanation
+                    if patch.metadata is not UNSET:
+                        assert isinstance(patch.metadata, dict)
+                        span_annotation.metadata_ = patch.metadata
+                    if patch.identifier is not UNSET:
+                        span_annotation.identifier = patch.identifier or ""
+                    if patch.source:
+                        span_annotation.source = patch.source.value
+                    session.add(span_annotation)
+                    patched_annotations.append(
+                        SpanAnnotation(
+                            id=annotation_id,
+                            project_id=project_id,
+                            db_record=span_annotation,
                         )
                     )
-                )
-            }
-            patched_annotations = [
-                SpanAnnotation(
-                    id=span_annotation.id,
-                    project_id=project_id_by_span_rowid[span_annotation.span_rowid],
-                    db_record=span_annotation,
-                )
-                for span_annotation in span_annotations_by_id.values()
-            ]
 
         info.context.event_queue.put(
-            SpanAnnotationInsertEvent(tuple(span_annotations_by_id.keys()))
+            SpanAnnotationInsertEvent(tuple(a.id for a in patched_annotations))
         )
         return SpanAnnotationMutationPayload(
             span_annotations=patched_annotations,
@@ -352,66 +358,69 @@ class SpanAnnotationMutationMixin:
             user_id = int(user.identity)
             user_is_admin = user.is_admin
 
-        span_annotation_ids: dict[int, None] = {}  # use a dict to preserve ordering
+        # SpanAnnotation's node id is compound "<project_id>:<row_id>"
+        # (Stage 4b-2f); trusted directly. Grouped by project rather than
+        # rejecting multi-project batches, same as patch_span_annotations
+        # above -- same accepted cross-project-atomicity tradeoff applies.
+        # Keyed by (project_id, row_id), not bare row_id: see the matching
+        # comment in patch_span_annotations for why a bare-id key is unsafe
+        # once row ids are only unique within a project's own schema.
+        ordered_keys: list[tuple[int, int]] = []
+        seen_keys: set[tuple[int, int]] = set()
         for annotation_gid in input.annotation_ids:
             try:
-                span_annotation_id = from_global_id_with_expected_type(
+                project_id, span_annotation_id = from_project_scoped_global_id_with_expected_type(
                     annotation_gid, SpanAnnotation.__name__
                 )
             except ValueError:
                 raise BadRequest(f"Invalid span annotation ID: {annotation_gid}")
-            if span_annotation_id in span_annotation_ids:
+            key = (project_id, span_annotation_id)
+            if key in seen_keys:
                 raise BadRequest(f"Duplicate span annotation ID: {span_annotation_id}")
-            span_annotation_ids[span_annotation_id] = None
+            seen_keys.add(key)
+            ordered_keys.append(key)
 
-        async with info.context.db() as session:
-            stmt = (
-                delete(models.SpanAnnotation)
-                .where(models.SpanAnnotation.id.in_(span_annotation_ids.keys()))
-                .returning(models.SpanAnnotation)
-            )
-            result = await session.scalars(stmt)
-            deleted_annotations_by_id = {annotation.id: annotation for annotation in result.all()}
+        annotation_ids_by_project: dict[int, list[int]] = defaultdict(list)
+        for project_id, annotation_id in ordered_keys:
+            annotation_ids_by_project[project_id].append(annotation_id)
 
-            if not user_is_admin and any(
-                annotation.user_id != user_id for annotation in deleted_annotations_by_id.values()
-            ):
-                await session.rollback()
-                raise Unauthorized(
-                    "At least one span annotation is not associated with the current user."
+        deleted_annotations_by_key: dict[tuple[int, int], models.SpanAnnotation] = {}
+        for project_id, group_ids in annotation_ids_by_project.items():
+            async with project_scoped_session(info.context.db, project_id) as session:
+                stmt = (
+                    delete(models.SpanAnnotation)
+                    .where(models.SpanAnnotation.id.in_(group_ids))
+                    .returning(models.SpanAnnotation)
                 )
+                result = await session.scalars(stmt)
+                group_deleted_by_id = {annotation.id: annotation for annotation in result.all()}
 
-            missing_span_annotation_ids = set(span_annotation_ids.keys()) - set(
-                deleted_annotations_by_id.keys()
-            )
-            if missing_span_annotation_ids:
-                raise NotFound(
-                    f"Could not find span annotations with IDs: {missing_span_annotation_ids}"
-                )
-
-            project_id_by_span_rowid = {
-                row.id: row.project_rowid
-                for row in await session.execute(
-                    select(models.Span.id, models.Trace.project_rowid)
-                    .join(models.Trace, models.Span.trace_rowid == models.Trace.id)
-                    .where(
-                        models.Span.id.in_(
-                            {a.span_rowid for a in deleted_annotations_by_id.values()}
-                        )
+                if not user_is_admin and any(
+                    annotation.user_id != user_id for annotation in group_deleted_by_id.values()
+                ):
+                    await session.rollback()
+                    raise Unauthorized(
+                        "At least one span annotation is not associated with the current user."
                     )
-                )
-            }
+
+                missing_span_annotation_ids = set(group_ids) - set(group_deleted_by_id.keys())
+                if missing_span_annotation_ids:
+                    raise NotFound(
+                        f"Could not find span annotations with IDs: {missing_span_annotation_ids}"
+                    )
+                for annotation_id, annotation in group_deleted_by_id.items():
+                    deleted_annotations_by_key[(project_id, annotation_id)] = annotation
 
         deleted_annotations_gql = [
             SpanAnnotation(
-                id=deleted_annotations_by_id[id].id,
-                project_id=project_id_by_span_rowid[deleted_annotations_by_id[id].span_rowid],
-                db_record=deleted_annotations_by_id[id],
+                id=annotation_id,
+                project_id=project_id,
+                db_record=deleted_annotations_by_key[(project_id, annotation_id)],
             )
-            for id in span_annotation_ids
+            for project_id, annotation_id in ordered_keys
         ]
         info.context.event_queue.put(
-            SpanAnnotationDeleteEvent(tuple(deleted_annotations_by_id.keys()))
+            SpanAnnotationDeleteEvent(tuple(aid for _, aid in deleted_annotations_by_key.keys()))
         )
         return SpanAnnotationMutationPayload(
             span_annotations=deleted_annotations_gql, query=Query()

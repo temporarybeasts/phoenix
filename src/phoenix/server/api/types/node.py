@@ -83,3 +83,20 @@ def parse_project_scoped_node_id(node_id: str) -> tuple[int, int]:
         return int(project_id_str), int(row_id_str)
     except ValueError:
         raise ValueError(f"Invalid project-scoped node id: {node_id}") from None
+
+
+def from_project_scoped_global_id_with_expected_type(
+    global_id: GlobalID, expected_type_name: str
+) -> tuple[int, int]:
+    """Decodes a compound "<project_id>:<row_id>" GlobalID (Trace/Span/
+    ProjectSession from Stage 4b-1; the 4 annotation types from Stage
+    4b-2f), checking that the type matches, and returns
+    `(project_id, row_id)`. The `from_global_id_with_expected_type`
+    counterpart above is for plain (non-project-scoped) node ids.
+    """
+    if global_id.type_name != expected_type_name:
+        raise ValueError(
+            f"The node id must correspond to a node of type {expected_type_name}, "
+            f"but instead corresponds to a node of type: {global_id.type_name}"
+        )
+    return parse_project_scoped_node_id(global_id.node_id)

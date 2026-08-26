@@ -22,7 +22,7 @@ from phoenix.server.api.queries import Query
 from phoenix.server.api.types.AnnotationSource import AnnotationSource
 from phoenix.server.api.types.DocumentAnnotation import DocumentAnnotation
 from phoenix.server.api.types.node import (
-    from_global_id_with_expected_type,
+    from_project_scoped_global_id_with_expected_type,
     parse_project_scoped_node_id,
 )
 from phoenix.server.bearer_auth import PhoenixUser
@@ -201,84 +201,90 @@ class DocumentAnnotationMutationMixin:
         if "user" in request.scope and isinstance((user := info.context.user), PhoenixUser):
             user_id = int(user.identity)
 
-        patch_by_id: dict[int, PatchAnnotationInput] = {}
+        # DocumentAnnotation's node id is compound "<project_id>:<row_id>"
+        # (Stage 4b-2f); trusted directly, grouped by project rather than
+        # rejected -- same accepted cross-project-atomicity tradeoff as
+        # span_annotations_mutations.py's patch_span_annotations.
+        # Keyed by (project_id, row_id) -- see the matching comment in
+        # span_annotations_mutations.py's patch_span_annotations for why a
+        # bare-id key is unsafe once row ids are only unique per project.
+        patch_by_key: dict[tuple[int, int], PatchAnnotationInput] = {}
         for patch in input:
             try:
-                document_annotation_id = from_global_id_with_expected_type(
-                    patch.annotation_id, DocumentAnnotation.__name__
+                project_id, document_annotation_id = (
+                    from_project_scoped_global_id_with_expected_type(
+                        patch.annotation_id, DocumentAnnotation.__name__
+                    )
                 )
             except ValueError:
                 raise BadRequest(f"Invalid document annotation ID: {patch.annotation_id}")
-            if document_annotation_id in patch_by_id:
+            key = (project_id, document_annotation_id)
+            if key in patch_by_key:
                 raise BadRequest(
-                    f"Duplicate patch for document annotation ID: {document_annotation_id}"
+                    f"Duplicate patch for document annotation ID: {patch.annotation_id}"
                 )
-            patch_by_id[document_annotation_id] = patch
+            patch_by_key[key] = patch
 
-        async with info.context.db() as session:
-            document_annotations_by_id: dict[int, models.DocumentAnnotation] = {}
-            for document_annotation in await session.scalars(
-                select(models.DocumentAnnotation).where(
-                    models.DocumentAnnotation.id.in_(patch_by_id.keys())
-                )
-            ):
-                if document_annotation.user_id != user_id:
-                    raise Unauthorized(
-                        "At least one document annotation is not associated with the current user."
+        annotation_ids_by_project: dict[int, list[int]] = defaultdict(list)
+        for project_id, annotation_id in patch_by_key:
+            annotation_ids_by_project[project_id].append(annotation_id)
+
+        patched_annotations: list[DocumentAnnotation] = []
+        for project_id, group_ids in annotation_ids_by_project.items():
+            async with project_scoped_session(info.context.db, project_id) as session:
+                document_annotations_by_id: dict[int, models.DocumentAnnotation] = {}
+                for document_annotation in await session.scalars(
+                    select(models.DocumentAnnotation).where(
+                        models.DocumentAnnotation.id.in_(group_ids)
                     )
-                document_annotations_by_id[document_annotation.id] = document_annotation
+                ):
+                    if document_annotation.user_id != user_id:
+                        raise Unauthorized(
+                            "At least one document annotation is not associated with the "
+                            "current user."
+                        )
+                    document_annotations_by_id[document_annotation.id] = document_annotation
 
-            missing_ids = set(patch_by_id.keys()) - set(document_annotations_by_id.keys())
-            if missing_ids:
-                raise NotFound(f"Could not find document annotations with IDs: {missing_ids}")
+                missing_ids = set(group_ids) - set(document_annotations_by_id.keys())
+                if missing_ids:
+                    raise NotFound(f"Could not find document annotations with IDs: {missing_ids}")
 
-            for document_annotation_id, patch in patch_by_id.items():
-                document_annotation = document_annotations_by_id[document_annotation_id]
-                if patch.name and (name := patch.name.strip()):
-                    document_annotation.name = name
-                if patch.annotator_kind:
-                    document_annotation.annotator_kind = patch.annotator_kind.value
-                if patch.label is not UNSET:
-                    document_annotation.label = (
-                        (patch.label.strip() or None) if patch.label else None
-                    )
-                if patch.score is not UNSET:
-                    document_annotation.score = patch.score
-                if patch.explanation is not UNSET:
-                    document_annotation.explanation = (
-                        (patch.explanation.strip() or None) if patch.explanation else None
-                    )
-                if patch.metadata is not UNSET:
-                    if not isinstance(patch.metadata, dict):
-                        raise BadRequest("metadata must be a dict")
-                    document_annotation.metadata_ = patch.metadata
-                if patch.identifier is not UNSET:
-                    document_annotation.identifier = (patch.identifier or "").strip()
-                if patch.source:
-                    document_annotation.source = patch.source.value
-
-            project_id_by_span = {
-                row.id: row.project_rowid
-                for row in await session.execute(
-                    select(models.Span.id, models.Trace.project_rowid)
-                    .join(models.Trace, models.Span.trace_rowid == models.Trace.id)
-                    .where(
-                        models.Span.id.in_(
-                            {a.span_rowid for a in document_annotations_by_id.values()}
+                for annotation_id in group_ids:
+                    document_annotation = document_annotations_by_id[annotation_id]
+                    patch = patch_by_key[(project_id, annotation_id)]
+                    if patch.name and (name := patch.name.strip()):
+                        document_annotation.name = name
+                    if patch.annotator_kind:
+                        document_annotation.annotator_kind = patch.annotator_kind.value
+                    if patch.label is not UNSET:
+                        document_annotation.label = (
+                            (patch.label.strip() or None) if patch.label else None
+                        )
+                    if patch.score is not UNSET:
+                        document_annotation.score = patch.score
+                    if patch.explanation is not UNSET:
+                        document_annotation.explanation = (
+                            (patch.explanation.strip() or None) if patch.explanation else None
+                        )
+                    if patch.metadata is not UNSET:
+                        if not isinstance(patch.metadata, dict):
+                            raise BadRequest("metadata must be a dict")
+                        document_annotation.metadata_ = patch.metadata
+                    if patch.identifier is not UNSET:
+                        document_annotation.identifier = (patch.identifier or "").strip()
+                    if patch.source:
+                        document_annotation.source = patch.source.value
+                    patched_annotations.append(
+                        DocumentAnnotation(
+                            id=annotation_id,
+                            project_id=project_id,
+                            db_record=document_annotation,
                         )
                     )
-                )
-            }
-            patched_annotations = [
-                DocumentAnnotation(
-                    id=anno.id, project_id=project_id_by_span[anno.span_rowid], db_record=anno
-                )
-                for anno in document_annotations_by_id.values()
-            ]
 
         # Publish event after successful commit (context manager auto-commits)
         info.context.event_queue.put(
-            DocumentAnnotationInsertEvent(tuple(document_annotations_by_id.keys()))
+            DocumentAnnotationInsertEvent(tuple(a.id for a in patched_annotations))
         )
         return DocumentAnnotationMutationPayload(
             document_annotations=patched_annotations,
@@ -300,75 +306,86 @@ class DocumentAnnotationMutationMixin:
             user_id = int(user.identity)
             user_is_admin = user.is_admin
 
-        # Parse and deduplicate IDs while preserving order
-        annotation_ids: list[int] = []
-        seen_ids: set[int] = set()
+        # DocumentAnnotation's node id is compound "<project_id>:<row_id>"
+        # (Stage 4b-2f); trusted directly, grouped by project rather than
+        # rejected -- same accepted cross-project-atomicity tradeoff as
+        # patch_document_annotations above. Parse and deduplicate IDs while
+        # preserving order. Keyed by (project_id, row_id) -- see the
+        # matching comment in span_annotations_mutations.py's
+        # patch_span_annotations for why a bare-id key is unsafe.
+        ordered_keys: list[tuple[int, int]] = []
+        seen_keys: set[tuple[int, int]] = set()
         for annotation_gid in input.annotation_ids:
             try:
-                annotation_id = from_global_id_with_expected_type(
+                project_id, annotation_id = from_project_scoped_global_id_with_expected_type(
                     annotation_gid, DocumentAnnotation.__name__
                 )
             except ValueError:
                 raise BadRequest(f"Invalid document annotation ID: {annotation_gid}")
-            if annotation_id in seen_ids:
+            key = (project_id, annotation_id)
+            if key in seen_keys:
                 raise BadRequest(f"Duplicate document annotation ID: {annotation_id}")
-            seen_ids.add(annotation_id)
-            annotation_ids.append(annotation_id)
+            seen_keys.add(key)
+            ordered_keys.append(key)
 
-        async with info.context.db() as session:
-            # Fetch annotations first to check authorization
-            annotations_by_id: dict[int, models.DocumentAnnotation] = {
-                anno.id: anno
-                for anno in await session.scalars(
-                    select(models.DocumentAnnotation).where(
-                        models.DocumentAnnotation.id.in_(annotation_ids)
+        annotation_ids_by_project: dict[int, list[int]] = defaultdict(list)
+        for project_id, annotation_id in ordered_keys:
+            annotation_ids_by_project[project_id].append(annotation_id)
+
+        annotations_by_key: dict[tuple[int, int], models.DocumentAnnotation] = {}
+        for project_id, group_ids in annotation_ids_by_project.items():
+            async with project_scoped_session(info.context.db, project_id) as session:
+                # Fetch annotations first to check authorization
+                group_annotations_by_id: dict[int, models.DocumentAnnotation] = {
+                    anno.id: anno
+                    for anno in await session.scalars(
+                        select(models.DocumentAnnotation).where(
+                            models.DocumentAnnotation.id.in_(group_ids)
+                        )
+                    )
+                }
+
+                # Check for missing annotations
+                missing_ids = set(group_ids) - set(group_annotations_by_id.keys())
+                if missing_ids:
+                    raise NotFound(f"Could not find document annotations with IDs: {missing_ids}")
+
+                # Check authorization before deleting
+                if not user_is_admin:
+                    unauthorized_ids = [
+                        aid
+                        for aid, anno in group_annotations_by_id.items()
+                        if anno.user_id != user_id
+                    ]
+                    if unauthorized_ids:
+                        raise Unauthorized(
+                            "At least one document annotation is not associated with the "
+                            "current user."
+                        )
+
+                # Now delete
+                await session.execute(
+                    delete(models.DocumentAnnotation).where(
+                        models.DocumentAnnotation.id.in_(group_ids)
                     )
                 )
-            }
-
-            # Check for missing annotations
-            missing_ids = set(annotation_ids) - set(annotations_by_id.keys())
-            if missing_ids:
-                raise NotFound(f"Could not find document annotations with IDs: {missing_ids}")
-
-            # Check authorization before deleting
-            if not user_is_admin:
-                unauthorized_ids = [
-                    aid for aid, anno in annotations_by_id.items() if anno.user_id != user_id
-                ]
-                if unauthorized_ids:
-                    raise Unauthorized(
-                        "At least one document annotation is not associated with the current user."
-                    )
-
-            project_id_by_span = {
-                row.id: row.project_rowid
-                for row in await session.execute(
-                    select(models.Span.id, models.Trace.project_rowid)
-                    .join(models.Trace, models.Span.trace_rowid == models.Trace.id)
-                    .where(models.Span.id.in_({a.span_rowid for a in annotations_by_id.values()}))
-                )
-            }
-
-            # Now delete
-            await session.execute(
-                delete(models.DocumentAnnotation).where(
-                    models.DocumentAnnotation.id.in_(annotation_ids)
-                )
-            )
+                for annotation_id, annotation in group_annotations_by_id.items():
+                    annotations_by_key[(project_id, annotation_id)] = annotation
 
         # Publish event after successful commit (context manager auto-commits)
-        info.context.event_queue.put(DocumentAnnotationDeleteEvent(tuple(annotation_ids)))
+        info.context.event_queue.put(
+            DocumentAnnotationDeleteEvent(tuple(aid for _, aid in ordered_keys))
+        )
 
         # Return annotations in original order
         return DocumentAnnotationMutationPayload(
             document_annotations=[
                 DocumentAnnotation(
-                    id=annotations_by_id[aid].id,
-                    project_id=project_id_by_span[annotations_by_id[aid].span_rowid],
-                    db_record=annotations_by_id[aid],
+                    id=annotation_id,
+                    project_id=project_id,
+                    db_record=annotations_by_key[(project_id, annotation_id)],
                 )
-                for aid in annotation_ids
+                for project_id, annotation_id in ordered_keys
             ],
             query=Query(),
         )

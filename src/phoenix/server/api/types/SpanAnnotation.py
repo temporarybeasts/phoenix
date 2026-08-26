@@ -3,7 +3,7 @@ from math import isfinite
 from typing import TYPE_CHECKING, Annotated, Optional
 
 import strawberry
-from strawberry.relay import GlobalID, Node, NodeID
+from strawberry.relay import GlobalID, Node
 from strawberry.scalars import JSON
 from strawberry.types import Info
 
@@ -21,7 +21,13 @@ if TYPE_CHECKING:
 
 @strawberry.type
 class SpanAnnotation(Node, Annotation):
-    id: NodeID[int]
+    # Schema-per-project (Stage 4b-2f): compound "<project_id>:<row_id>"
+    # GlobalID, same rationale as Trace/Span/ProjectSession in Stage 4b-1 --
+    # see Span.py's matching comment. A bare row id stops being globally
+    # unique once each project has its own schema, and annotation
+    # PATCH/DELETE mutations need the project_id up front to route to the
+    # right one.
+    id: strawberry.Private[int]
     # Schema-per-project (Stage 4b-1): an annotation's project is always its
     # span's project, so this is resolved once at construction (not via a
     # per-request lookup) and threaded straight through to the loaders below,
@@ -32,6 +38,10 @@ class SpanAnnotation(Node, Annotation):
     def __post_init__(self) -> None:
         if self.db_record and self.id != self.db_record.id:
             raise ValueError("SpanAnnotation ID mismatch")
+
+    @classmethod
+    def resolve_id(cls, root: "SpanAnnotation", *, info: Info) -> str:
+        return f"{root.project_id}:{root.id}"
 
     @strawberry.field(description="Name of the annotation, e.g. 'helpfulness' or 'relevance'.")  # type: ignore
     async def name(

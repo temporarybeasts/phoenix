@@ -13,6 +13,7 @@ from strawberry.relay import GlobalID
 from phoenix.datetime_utils import normalize_datetime
 from phoenix.db import models
 from phoenix.db.insertion.types import Precursors
+from phoenix.server.access.schema_provisioning import project_scoped_session
 from phoenix.server.api.routers.v1.models import V1RoutesBaseModel
 from phoenix.server.api.types.ProjectSessionAnnotation import (
     ProjectSessionAnnotation as SessionAnnotationNodeType,
@@ -942,6 +943,14 @@ async def delete_span_annotations(
         delete_all=delete_all,
     )
     user_id_for_filter = _resolve_non_admin_user_id(request)
+    # Already single-project by construction (project_identifier is a
+    # required path param) -- a mechanical swap to project_scoped_session,
+    # same shape as clear_project (Stage 4b-2e). Project existence is
+    # resolved via a plain session first: Project is a shared, never-
+    # project-scoped table, but a nonexistent project also has no
+    # provisioned schema/role, so opening a scoped session before
+    # confirming it exists would surface a confusing error instead of a
+    # clean 404.
     async with request.app.state.db() as session:
         project = await get_project_by_identifier(session, project_identifier)
         if not project:
@@ -950,23 +959,24 @@ async def delete_span_annotations(
                 detail=f"Project with identifier {project_identifier} not found",
             )
 
-        span_rowids_in_project = (
-            select(models.Span.id)
-            .join(models.Trace, models.Span.trace_rowid == models.Trace.id)
-            .where(models.Trace.project_rowid == project.id)
-        )
-        predicate = _build_annotation_filter_predicates(
-            models.SpanAnnotation,
-            name=name,
-            identifier=identifier,
-            annotator_kind=annotator_kind,
-            created_after=start_time,
-            created_before=end_time,
-            user_id_for_filter=user_id_for_filter,
-        )
-        predicate.append(models.SpanAnnotation.span_rowid.in_(span_rowids_in_project))
+    span_rowids_in_project = (
+        select(models.Span.id)
+        .join(models.Trace, models.Span.trace_rowid == models.Trace.id)
+        .where(models.Trace.project_rowid == project.id)
+    )
+    predicate = _build_annotation_filter_predicates(
+        models.SpanAnnotation,
+        name=name,
+        identifier=identifier,
+        annotator_kind=annotator_kind,
+        created_after=start_time,
+        created_before=end_time,
+        user_id_for_filter=user_id_for_filter,
+    )
+    predicate.append(models.SpanAnnotation.span_rowid.in_(span_rowids_in_project))
 
-        stmt = delete(models.SpanAnnotation).where(*predicate).returning(models.SpanAnnotation.id)
+    stmt = delete(models.SpanAnnotation).where(*predicate).returning(models.SpanAnnotation.id)
+    async with project_scoped_session(request.app.state.db, project.id) as session:
         deleted_ids = list((await session.scalars(stmt)).all())
 
     if deleted_ids:
@@ -1029,6 +1039,7 @@ async def delete_trace_annotations(
         delete_all=delete_all,
     )
     user_id_for_filter = _resolve_non_admin_user_id(request)
+    # See the matching comment in delete_span_annotations above.
     async with request.app.state.db() as session:
         project = await get_project_by_identifier(session, project_identifier)
         if not project:
@@ -1037,21 +1048,22 @@ async def delete_trace_annotations(
                 detail=f"Project with identifier {project_identifier} not found",
             )
 
-        trace_rowids_in_project = select(models.Trace.id).where(
-            models.Trace.project_rowid == project.id
-        )
-        predicate = _build_annotation_filter_predicates(
-            models.TraceAnnotation,
-            name=name,
-            identifier=identifier,
-            annotator_kind=annotator_kind,
-            created_after=start_time,
-            created_before=end_time,
-            user_id_for_filter=user_id_for_filter,
-        )
-        predicate.append(models.TraceAnnotation.trace_rowid.in_(trace_rowids_in_project))
+    trace_rowids_in_project = select(models.Trace.id).where(
+        models.Trace.project_rowid == project.id
+    )
+    predicate = _build_annotation_filter_predicates(
+        models.TraceAnnotation,
+        name=name,
+        identifier=identifier,
+        annotator_kind=annotator_kind,
+        created_after=start_time,
+        created_before=end_time,
+        user_id_for_filter=user_id_for_filter,
+    )
+    predicate.append(models.TraceAnnotation.trace_rowid.in_(trace_rowids_in_project))
 
-        stmt = delete(models.TraceAnnotation).where(*predicate).returning(models.TraceAnnotation.id)
+    stmt = delete(models.TraceAnnotation).where(*predicate).returning(models.TraceAnnotation.id)
+    async with project_scoped_session(request.app.state.db, project.id) as session:
         deleted_ids = list((await session.scalars(stmt)).all())
 
     if deleted_ids:
@@ -1114,6 +1126,7 @@ async def delete_session_annotations(
         delete_all=delete_all,
     )
     user_id_for_filter = _resolve_non_admin_user_id(request)
+    # See the matching comment in delete_span_annotations above.
     async with request.app.state.db() as session:
         project = await get_project_by_identifier(session, project_identifier)
         if not project:
@@ -1122,27 +1135,28 @@ async def delete_session_annotations(
                 detail=f"Project with identifier {project_identifier} not found",
             )
 
-        session_rowids_in_project = select(models.ProjectSession.id).where(
-            models.ProjectSession.project_id == project.id
-        )
-        predicate = _build_annotation_filter_predicates(
-            models.ProjectSessionAnnotation,
-            name=name,
-            identifier=identifier,
-            annotator_kind=annotator_kind,
-            created_after=start_time,
-            created_before=end_time,
-            user_id_for_filter=user_id_for_filter,
-        )
-        predicate.append(
-            models.ProjectSessionAnnotation.project_session_id.in_(session_rowids_in_project)
-        )
+    session_rowids_in_project = select(models.ProjectSession.id).where(
+        models.ProjectSession.project_id == project.id
+    )
+    predicate = _build_annotation_filter_predicates(
+        models.ProjectSessionAnnotation,
+        name=name,
+        identifier=identifier,
+        annotator_kind=annotator_kind,
+        created_after=start_time,
+        created_before=end_time,
+        user_id_for_filter=user_id_for_filter,
+    )
+    predicate.append(
+        models.ProjectSessionAnnotation.project_session_id.in_(session_rowids_in_project)
+    )
 
-        stmt = (
-            delete(models.ProjectSessionAnnotation)
-            .where(*predicate)
-            .returning(models.ProjectSessionAnnotation.id)
-        )
+    stmt = (
+        delete(models.ProjectSessionAnnotation)
+        .where(*predicate)
+        .returning(models.ProjectSessionAnnotation.id)
+    )
+    async with project_scoped_session(request.app.state.db, project.id) as session:
         deleted_ids = list((await session.scalars(stmt)).all())
 
     if deleted_ids:
