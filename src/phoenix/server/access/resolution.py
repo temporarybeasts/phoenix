@@ -8,6 +8,8 @@ to read from -- see the SSO/RBAC fork plan.
 
 from __future__ import annotations
 
+from typing import Iterable
+
 import cachetools
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,6 +44,22 @@ async def get_readable_project_ids(
     ids = await _resolve_readable_project_ids(session, user_id)
     _readable_project_ids_cache[user_id] = ids
     return ids
+
+
+async def get_unreadable_project_ids(
+    session: AsyncSession, user: PhoenixUser, project_ids: Iterable[int]
+) -> frozenset[int]:
+    """The subset of ``project_ids`` ``user`` cannot read -- empty for
+    admin/system users. Reused for write eligibility too (not just reads):
+    the app layer draws no per-project read/write distinction today (a
+    single global role gate, not project-scoped), so a project a user can
+    read is one they can annotate. Callers should only invoke this when
+    auth is enabled and ``user`` is a real ``PhoenixUser``, matching
+    ``get_readable_project_ids``'s own contract."""
+    readable = await get_readable_project_ids(session, user)
+    if readable is None:
+        return frozenset()
+    return frozenset(project_ids) - readable
 
 
 async def user_can(
