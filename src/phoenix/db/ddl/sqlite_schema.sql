@@ -43,6 +43,18 @@ CREATE UNIQUE INDEX ix_generative_models_name_is_built_in ON generative_models
 CREATE INDEX ix_generative_models_updated_at ON generative_models (updated_at);
 
 
+-- Table: idp_groups
+-- -----------------
+CREATE TABLE idp_groups (
+    id INTEGER NOT NULL,
+    name VARCHAR NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT pk_idp_groups PRIMARY KEY (id)
+);
+
+CREATE UNIQUE INDEX ix_idp_groups_name ON idp_groups (name);
+
+
 -- Table: languages
 -- ----------------
 CREATE TABLE languages (
@@ -1222,6 +1234,49 @@ CREATE INDEX ix_password_reset_tokens_expires_at ON password_reset_tokens (expir
 CREATE UNIQUE INDEX ix_password_reset_tokens_user_id ON password_reset_tokens (user_id);
 
 
+-- Table: project_grants
+-- ---------------------
+CREATE TABLE project_grants (
+    id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+    user_id INTEGER,
+    idp_group_id INTEGER,
+    permission VARCHAR NOT NULL,
+    source VARCHAR NOT NULL
+        CONSTRAINT "ck_project_grants_`valid_project_grant_source`"
+        CHECK (source IN ('config', 'manual')),
+    granted_by INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT pk_project_grants PRIMARY KEY (id),
+    CONSTRAINT "ck_project_grants_`exactly_one_grant_subject`"
+        CHECK ((user_id IS NOT NULL) != (idp_group_id IS NOT NULL)),
+    CONSTRAINT fk_project_grants_granted_by_users
+        FOREIGN KEY (granted_by)
+        REFERENCES users (id)
+        ON DELETE SET NULL,
+    CONSTRAINT fk_project_grants_idp_group_id_idp_groups
+        FOREIGN KEY (idp_group_id)
+        REFERENCES idp_groups (id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_project_grants_project_id_projects
+        FOREIGN KEY (project_id)
+        REFERENCES projects (id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_project_grants_user_id_users
+        FOREIGN KEY (user_id)
+        REFERENCES users (id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX ix_project_grants_project_id ON project_grants (project_id);
+CREATE UNIQUE INDEX uq_project_grants_idp_group ON project_grants
+    (project_id, idp_group_id, permission)
+    WHERE idp_group_id IS NOT NULL;
+CREATE UNIQUE INDEX uq_project_grants_user ON project_grants
+    (project_id, user_id, permission)
+    WHERE user_id IS NOT NULL;
+
+
 -- Table: project_session_annotations
 -- ----------------------------------
 CREATE TABLE project_session_annotations (
@@ -1674,3 +1729,23 @@ CREATE TABLE trace_annotations (
 
 CREATE INDEX ix_trace_annotations_trace_rowid ON trace_annotations (trace_rowid);
 CREATE INDEX ix_trace_annotations_user_id ON trace_annotations (user_id);
+
+
+-- Table: user_idp_group_memberships
+-- ---------------------------------
+CREATE TABLE user_idp_group_memberships (
+    user_id INTEGER NOT NULL,
+    idp_group_id INTEGER NOT NULL,
+    CONSTRAINT pk_user_idp_group_memberships PRIMARY KEY (user_id, idp_group_id),
+    CONSTRAINT fk_user_idp_group_memberships_idp_group_id_idp_groups
+        FOREIGN KEY (idp_group_id)
+        REFERENCES idp_groups (id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_user_idp_group_memberships_user_id_users
+        FOREIGN KEY (user_id)
+        REFERENCES users (id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX ix_user_idp_group_memberships_idp_group_id ON user_idp_group_memberships
+    (idp_group_id);
