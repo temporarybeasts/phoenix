@@ -24,6 +24,7 @@ from phoenix.db.insertion.helpers import insert_on_conflict
 from phoenix.db.types.db_helper_types import UNDEFINED
 from phoenix.server.api.routers.v1.datasets import DatasetExample
 from phoenix.server.api.types.node import from_global_id_with_expected_type
+from phoenix.server.api.utils import delete_projects
 from phoenix.server.authorization import is_not_locked
 from phoenix.server.bearer_auth import PhoenixUser
 from phoenix.server.dml_event import ExperimentInsertEvent
@@ -599,11 +600,14 @@ async def delete_experiment(
         if result is None:
             raise HTTPException(detail="Experiment does not exist", status_code=404)
         project_name = result.project_name
-        if delete_project and project_name:
-            delete_project_stmt = sa.delete(models.Project).where(
-                models.Project.name == project_name
-            )
-            await session.execute(delete_project_stmt)
+    if delete_project and project_name:
+        # Stage 4b-2h: routed through delete_projects (own session, run
+        # after the experiment delete above has committed) instead of a
+        # hand-rolled delete in the same session, so the project's schema/
+        # role get deprovisioned too -- see deprovision_project_schemas's
+        # docstring for why that's needed independent of the row data,
+        # which Postgres's own FK cascade already removes either way.
+        await delete_projects(request.app.state.db, project_name)
 
 
 class ListExperimentsResponseBody(PaginatedResponseBody[Experiment]):

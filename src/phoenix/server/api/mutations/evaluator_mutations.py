@@ -28,6 +28,7 @@ from phoenix.db.types.annotation_configs import (
 )
 from phoenix.db.types.identifier import Identifier
 from phoenix.db.types.identifier import Identifier as IdentifierModel
+from phoenix.server.access.schema_provisioning import deprovision_project_schemas
 from phoenix.server.api.auth import IsLocked, IsNotReadOnly, IsNotViewer
 from phoenix.server.api.context import Context
 from phoenix.server.api.evaluators import (
@@ -953,6 +954,16 @@ class EvaluatorMutationMixin:
                 await session.execute(
                     delete(models.Project).where(models.Project.id.in_(project_ids))
                 )
+
+        # Stage 4b-2h: schema/role cleanup, best-effort, after the row
+        # deletes above have committed -- kept as a separate step outside
+        # the transaction above (not routed through delete_projects_by_id,
+        # which would open its own session) since this mutation's Project
+        # delete shares one transaction with several other deletes earlier
+        # in the same method; see deprovision_project_schemas's docstring
+        # for why this step is independent of the row data either way.
+        if project_ids:
+            await deprovision_project_schemas(info.context.db, project_ids)
 
         return DeleteDatasetEvaluatorsPayload(
             dataset_evaluator_ids=deleted_gids,

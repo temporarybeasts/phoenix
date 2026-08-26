@@ -274,6 +274,30 @@ async def deprovision_project_schema(connection: AsyncConnection, project_id: in
     )
 
 
+async def deprovision_project_schemas(db: "DbSessionFactory", project_ids: list[int]) -> None:
+    """Stage 4b-2h: batched, best-effort counterpart to
+    `deprovision_project_schema` for callers that delete more than one
+    `Project` row at once (`api/utils.py`'s `delete_projects`/
+    `delete_projects_by_id`, `daemons/experiment_sweeper.py`'s ephemeral-
+    experiment cleanup). Called after the shared-schema `Project` row
+    deletes have already committed -- each project's schema/role is
+    dropped independently, in its own transaction, so one project's
+    deprovisioning failure doesn't block or roll back another's, and a
+    failure never surfaces as a failed delete: the row data is already
+    gone either way (Postgres's own cross-schema FK cascade already
+    removed it -- see `_project_scoped_metadata`'s `referred_schema_fn`
+    above), so this step only reclaims the now-empty schema/role.
+    """
+    if db.engine is None:
+        return
+    for project_id in project_ids:
+        try:
+            async with db.engine.begin() as connection:
+                await deprovision_project_schema(connection, project_id)
+        except Exception:
+            logger.exception(f"Failed to deprovision schema for deleted project {project_id}")
+
+
 async def transfer_trace_between_projects(
     engine: AsyncEngine,
     trace_rowid: int,

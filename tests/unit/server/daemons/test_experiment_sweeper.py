@@ -5,9 +5,15 @@ from unittest.mock import patch
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from phoenix.config import EPHEMERAL_EXPERIMENT_TIME_TO_LIVE_HOURS
 from phoenix.db import models
+from phoenix.server.access.schema_provisioning import (
+    _project_role_name,
+    _project_schema_name,
+    provision_project_schema,
+)
 from phoenix.server.daemons.experiment_sweeper import ExperimentSweeper
 from phoenix.server.types import DbSessionFactory
 
@@ -212,3 +218,102 @@ class TestExperimentSweeper:
         )
 
         await sweeper.stop()
+
+    @staticmethod
+    async def _schema_and_role_exist(engine: AsyncEngine, project_id: int) -> tuple[bool, bool]:
+        schema_name = _project_schema_name(project_id)
+        role_name = _project_role_name(project_id)
+        async with engine.connect() as conn:
+            schema_exists = bool(
+                await conn.scalar(
+                    sa.text("SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = :name)"),
+                    {"name": schema_name},
+                )
+            )
+            role_exists = bool(
+                await conn.scalar(
+                    sa.text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :name)"),
+                    {"name": role_name},
+                )
+            )
+        return schema_exists, role_exists
+
+    @pytest.mark.postgres_only
+    async def test_experiment_sweeper_deprovisions_orphaned_project_schema(
+        self,
+        db: DbSessionFactory,
+        postgresql_engine: AsyncEngine,
+        rendezvous: Rendezvous,
+    ) -> None:
+        """Stage 4b-2h: the sweeper's own bulk Project delete (distinct from
+        `api/utils.py`'s `delete_projects` -- it has its own `no_experiment_refs`
+        guard, so it wasn't simplified to call that helper) must deprovision
+        the schema/role for a project it actually deletes, and must leave a
+        still-referenced project's schema/role alone.
+        """
+        old = datetime.now(timezone.utc) - timedelta(
+            hours=EPHEMERAL_EXPERIMENT_TIME_TO_LIVE_HOURS + 1
+        )
+
+        orphaned_project_name = "orphaned_ephemeral_project"
+        async with db() as session:
+            project = models.Project(name=orphaned_project_name)
+            session.add(project)
+            await session.flush()
+            orphaned_project_id = project.id
+        async with postgresql_engine.connect() as conn:
+            await provision_project_schema(conn, orphaned_project_id)
+            await conn.commit()
+        await self._insert_experiment(
+            db,
+            name="orphaned eval run",
+            created_at=old,
+            project_name=orphaned_project_name,
+            is_ephemeral=True,
+            updated_at=old,
+        )
+
+        shared_project_name = "shared_project_kept"
+        async with db() as session:
+            project = models.Project(name=shared_project_name)
+            session.add(project)
+            await session.flush()
+            shared_project_id = project.id
+        async with postgresql_engine.connect() as conn:
+            await provision_project_schema(conn, shared_project_id)
+            await conn.commit()
+        await self._insert_experiment(
+            db,
+            name="expired ephemeral (shared)",
+            created_at=old,
+            project_name=shared_project_name,
+            is_ephemeral=True,
+            updated_at=old,
+        )
+        await self._insert_experiment(
+            db,
+            name="permanent (shared)",
+            created_at=old,
+            project_name=shared_project_name,
+            is_ephemeral=False,
+        )
+
+        sweeper = ExperimentSweeper(db=db)
+        await sweeper.start()
+        await rendezvous.done.wait()
+        rendezvous.done.clear()
+        await sweeper.stop()
+
+        assert not await self._project_exists(db, orphaned_project_name)
+        orphaned_schema_exists, orphaned_role_exists = await self._schema_and_role_exist(
+            postgresql_engine, orphaned_project_id
+        )
+        assert not orphaned_schema_exists, "orphaned project's schema should be deprovisioned"
+        assert not orphaned_role_exists, "orphaned project's role should be deprovisioned"
+
+        assert await self._project_exists(db, shared_project_name)
+        shared_schema_exists, shared_role_exists = await self._schema_and_role_exist(
+            postgresql_engine, shared_project_id
+        )
+        assert shared_schema_exists, "still-referenced project's schema must not be dropped"
+        assert shared_role_exists, "still-referenced project's role must not be dropped"
