@@ -8,9 +8,11 @@ from time import time
 import sqlalchemy as sa
 from sqlalchemy.orm import selectinload
 
+from phoenix.config import get_env_project_scoped_storage_enabled
 from phoenix.db.constants import DEFAULT_PROJECT_TRACE_RETENTION_POLICY_ID
 from phoenix.db.helpers import SupportedSQLDialect
 from phoenix.db.models import Project, ProjectSession, ProjectTraceRetentionPolicy, Trace
+from phoenix.server.access.schema_provisioning import project_scoped_session
 from phoenix.server.dml_event import SpanDeleteEvent
 from phoenix.server.dml_event_handler import DmlEventHandler
 from phoenix.server.prometheus import (
@@ -83,9 +85,29 @@ class TraceDataSweeper(DaemonTask):
                 if policy.id == DEFAULT_PROJECT_TRACE_RETENTION_POLICY_ID
                 else [p.id for p in policy.projects]
             )
-            async with self._db() as session:
-                result = await policy.rule.delete_traces(session, project_rowids)
-            self._dml_event_handler.put(SpanDeleteEvent(tuple(result)))
+            if get_env_project_scoped_storage_enabled():
+                # A single `DELETE ... WHERE project_rowid IN (:many)` can no
+                # longer reach every affected project's rows -- each lives in
+                # its own schema. Fan out one scoped delete per project
+                # instead (Stage 4b-2e); retention runs hourly and isn't
+                # latency-sensitive, so the O(projects) round trips are an
+                # acceptable tradeoff for a policy covering many projects.
+                if isinstance(project_rowids, sa.Select):
+                    async with self._db() as session:
+                        materialized_project_rowids = list(
+                            (await session.scalars(project_rowids)).all()
+                        )
+                else:
+                    materialized_project_rowids = list(project_rowids)
+                affected: set[int] = set()
+                for project_rowid in materialized_project_rowids:
+                    async with project_scoped_session(self._db, project_rowid) as session:
+                        affected |= await policy.rule.delete_traces(session, [project_rowid])
+                self._dml_event_handler.put(SpanDeleteEvent(tuple(affected)))
+            else:
+                async with self._db() as session:
+                    result = await policy.rule.delete_traces(session, project_rowids)
+                self._dml_event_handler.put(SpanDeleteEvent(tuple(result)))
             RETENTION_POLICY_EXECUTIONS.labels(status="success").inc()
         except Exception:
             logger.exception(f"Failed to apply retention policy '{policy.name}' (id={policy.id})")
@@ -93,6 +115,23 @@ class TraceDataSweeper(DaemonTask):
 
     async def _delete_orphan_sessions(self) -> None:
         """Delete session rows whose traces are all gone and whose last activity is old.
+
+        **Stage 4b-2e: NOT retrofitted for project-scoped storage, unlike
+        `_apply` above.** This scans/deletes `project_sessions`/`traces`
+        across every project at once via the plain shared-engine `self._db()`
+        session -- not narrowed to one retention policy's cohort like
+        `_apply`'s query is, but genuinely every provisioned project, since an
+        orphaned session can occur anywhere. Once traces live in per-project
+        schemas, this stops finding anything to delete for any project (the
+        shared tables it queries have no post-cutover rows), rather than
+        silently deleting the wrong things -- inert, not corrupting, but a
+        real functional regression (orphaned sessions accumulate forever)
+        that a full fix would need to enumerate every provisioned project and
+        fan out a scoped delete to each, the same shape as `_apply`'s fix but
+        over *all* projects rather than one policy's. Left undone here and
+        flagged explicitly rather than rushed, consistent with how Stage
+        4b-2d left annotation PATCH/DELETE mutations and the REST annotation
+        endpoints explicitly open rather than half-fixed.
 
         Trace deletion (retention rules, bulk deletes) does not cascade upward to
         ``project_sessions``, so sessions whose traces have all been deleted

@@ -5,7 +5,12 @@ from sqlalchemy.sql import literal
 from strawberry.relay import GlobalID
 from strawberry.types import Info
 
+from phoenix.config import get_env_project_scoped_storage_enabled
 from phoenix.db import models
+from phoenix.server.access.schema_provisioning import (
+    project_scoped_session,
+    transfer_traces_between_projects,
+)
 from phoenix.server.api.auth import IsNotReadOnly, IsNotViewer
 from phoenix.server.api.context import Context
 from phoenix.server.api.exceptions import BadRequest
@@ -27,6 +32,12 @@ def _trace_rowid(global_id: GlobalID) -> int:
     return row_id
 
 
+def _trace_project_and_rowid(global_id: GlobalID) -> tuple[int, int]:
+    if global_id.type_name != "Trace":
+        raise ValueError(f"Not a Trace global id: {global_id}")
+    return parse_project_scoped_node_id(global_id.node_id)
+
+
 @strawberry.type
 class TraceMutationMixin:
     @strawberry.mutation(permission_classes=[IsNotReadOnly, IsNotViewer])  # type: ignore
@@ -38,6 +49,58 @@ class TraceMutationMixin:
         if not trace_ids:
             raise BadRequest("Must provide at least one trace ID to delete")
         trace_ids = list(set(trace_ids))
+
+        if get_env_project_scoped_storage_enabled():
+            # Trust each GlobalID's embedded project_id (Stage 4b-2d's
+            # decision for the annotation create-mutations, applied here
+            # too) -- once ingest writes exclusively into per-project
+            # schemas, there's no shared-table row left to re-derive it
+            # from.
+            try:
+                project_and_rowids = [_trace_project_and_rowid(id) for id in trace_ids]
+            except ValueError as error:
+                raise BadRequest(str(error))
+            project_ids_seen = {project_id for project_id, _ in project_and_rowids}
+            if len(project_ids_seen) > 1:
+                raise BadRequest("Cannot delete traces from multiple projects")
+            project_id = next(iter(project_ids_seen))
+            trace_rowids = [rowid for _, rowid in project_and_rowids]
+            async with project_scoped_session(info.context.db, project_id) as session:
+                traces = (
+                    await session.scalars(
+                        delete(models.Trace)
+                        .where(models.Trace.id.in_(trace_rowids))
+                        .returning(models.Trace)
+                        .options(load_only(models.Trace.project_session_rowid))
+                    )
+                ).all()
+                if len(traces) < len(trace_rowids):
+                    await session.rollback()
+                    raise BadRequest("Invalid trace IDs provided")
+                session_ids = set(
+                    session_id
+                    for trace in traces
+                    if (session_id := trace.project_session_rowid) is not None
+                )
+                if session_ids:
+                    await session.execute(
+                        delete(models.ProjectSession).where(
+                            and_(
+                                models.ProjectSession.id.in_(session_ids),
+                                not_(
+                                    select(literal(1))
+                                    .where(
+                                        models.Trace.project_session_rowid
+                                        == models.ProjectSession.id
+                                    )
+                                    .exists()
+                                ),
+                            )
+                        )
+                    )
+                info.context.event_queue.put(SpanDeleteEvent((project_id,)))
+            return Query()
+
         try:
             trace_rowids = [_trace_rowid(id) for id in trace_ids]
         except ValueError as error:
@@ -94,10 +157,48 @@ class TraceMutationMixin:
             raise BadRequest("Must provide at least one trace ID to transfer")
         trace_ids = list(set(trace_ids))
         try:
-            trace_rowids = [_trace_rowid(id) for id in trace_ids]
             dest_project_rowid = from_global_id_with_expected_type(
                 global_id=project_id, expected_type_name="Project"
             )
+        except ValueError as error:
+            raise BadRequest(str(error))
+
+        if get_env_project_scoped_storage_enabled():
+            try:
+                project_and_rowids = [_trace_project_and_rowid(id) for id in trace_ids]
+            except ValueError as error:
+                raise BadRequest(str(error))
+            source_project_ids = {project_id for project_id, _ in project_and_rowids}
+            if len(source_project_ids) > 1:
+                raise BadRequest("Cannot transfer traces from multiple projects")
+            source_project_rowid = next(iter(source_project_ids))
+            async with info.context.db() as session:
+                dest_project = await session.get(models.Project, dest_project_rowid)
+                if dest_project is None:
+                    raise BadRequest("Destination project does not exist")
+            assert info.context.db.engine is not None
+            try:
+                await transfer_traces_between_projects(
+                    info.context.db.engine,
+                    [
+                        (rowid, source_project_rowid, dest_project_rowid)
+                        for _, rowid in project_and_rowids
+                    ],
+                )
+            except ValueError as error:
+                raise BadRequest(str(error))
+            # Invalidate per-project cached aggregates for both source and destination.
+            # The flag-off path below has never done this (a pre-existing gap relative
+            # to the REST endpoint's equivalent) -- left as-is there, since flag-off
+            # behavior must stay provably unchanged by this stage; only new (flag-on)
+            # code gets the fix.
+            info.context.event_queue.put(
+                SpanDeleteEvent((source_project_rowid, dest_project_rowid))
+            )
+            return Query()
+
+        try:
+            trace_rowids = [_trace_rowid(id) for id in trace_ids]
         except ValueError as error:
             raise BadRequest(str(error))
 

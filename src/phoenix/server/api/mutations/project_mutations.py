@@ -11,7 +11,10 @@ from strawberry.types import Info
 
 from phoenix.config import DEFAULT_PROJECT_NAME
 from phoenix.db import models
-from phoenix.server.access.schema_provisioning import deprovision_project_schema
+from phoenix.server.access.schema_provisioning import (
+    deprovision_project_schema,
+    project_scoped_session,
+)
 from phoenix.server.api.auth import IsNotReadOnly, IsNotViewer
 from phoenix.server.api.context import Context
 from phoenix.server.api.exceptions import BadRequest, Conflict
@@ -100,7 +103,10 @@ class ProjectMutationMixin:
         )
         if input.end_time:
             delete_statement = delete_statement.where(models.Trace.start_time < input.end_time)
-        async with info.context.db() as session:
+        # Already single-project by construction (an equality filter, never
+        # `.in_()`), so this is a mechanical swap to the scoped session --
+        # no multi-project ambiguity to guard against.
+        async with project_scoped_session(info.context.db, project_id) as session:
             deleted_trace_project_session_ids = await session.scalars(delete_statement)
             session_ids_to_delete = [
                 id_ for id_ in set(deleted_trace_project_session_ids) if id_ is not None

@@ -34,11 +34,11 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-from sqlalchemy import BLANK_SCHEMA, Insert, MetaData, event, select, text
+from sqlalchemy import BLANK_SCHEMA, Insert, MetaData, Table, delete, event, insert, select, text
 from sqlalchemy.engine import Connection, CursorResult, Engine
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
@@ -102,6 +102,17 @@ _PROJECT_SCOPED_MODELS_IN_DEPENDENCY_ORDER = (
     models.DocumentAnnotation,  # -> spans, users
     models.SpanCost,  # -> spans, traces, generative_models
     models.SpanCostDetail,  # -> span_costs
+)
+
+#: Stage 4b-2e: the subset of `_PROJECT_SCOPED_MODELS_IN_DEPENDENCY_ORDER`
+#: that's actually owned by a single trace and moves with it on transfer.
+#: Excludes `ProjectSession`/`ProjectSessionAnnotation` -- a session is
+#: inherently multi-trace, so moving one trace out of it can't sensibly
+#: carry the whole session along (see `transfer_trace_between_projects`).
+_TRANSFERABLE_TRACE_SUBTREE_MODELS = tuple(
+    model
+    for model in _PROJECT_SCOPED_MODELS_IN_DEPENDENCY_ORDER
+    if model not in (models.ProjectSession, models.ProjectSessionAnnotation)
 )
 
 
@@ -261,6 +272,242 @@ async def deprovision_project_schema(connection: AsyncConnection, project_id: in
             """
         )
     )
+
+
+async def transfer_trace_between_projects(
+    engine: AsyncEngine,
+    trace_rowid: int,
+    source_project_id: int,
+    dest_project_id: int,
+) -> None:
+    """Single-trace convenience wrapper around
+    `transfer_traces_between_projects` -- opens its own transaction. Prefer
+    `transfer_traces_between_projects` directly when a caller is moving more
+    than one trace in the same request, so the whole batch commits or rolls
+    back atomically instead of one trace at a time (matching the pre-cutover
+    single-`UPDATE`-statement transfer's all-or-nothing semantics).
+    """
+    if engine.dialect.name != "postgresql":
+        raise RuntimeError("transfer_trace_between_projects requires PostgreSQL.")
+    async with engine.begin() as connection:
+        await _transfer_trace_subtree_on_connection(
+            connection, trace_rowid, source_project_id, dest_project_id
+        )
+
+
+async def transfer_traces_between_projects(
+    engine: AsyncEngine,
+    transfers: Iterable[tuple[int, int, int]],
+) -> None:
+    """Stage 4b-2e: moves each `(trace_rowid, source_project_id,
+    dest_project_id)` triple's trace, and the subtree it owns (spans,
+    span/trace/document annotations, span costs and their detail rows),
+    from its source project's Postgres schema to its destination's, all in
+    one transaction -- the whole batch commits or rolls back together,
+    matching the pre-cutover single `UPDATE traces SET project_rowid = ...`
+    transfer's all-or-nothing semantics for a multi-trace request.
+
+    Physically impossible to express as that single UPDATE once traces live
+    in separate per-project schemas -- a row can't move between two
+    different physical tables via an UPDATE. Copy-then-delete instead,
+    mirroring Stage 4b-2c's data migration
+    (`migrate_to_project_scoped_schemas.py`) in spirit, but NOT in its
+    id-preserving `INSERT ... ON CONFLICT (id) DO NOTHING` mechanics: that
+    pattern is only safe when the destination schema starts empty (the
+    one-time historical backfill's case). Here the destination project's
+    schema is already live, with its own independently-advancing id
+    sequences -- a moderately active destination project will very likely
+    already have used the source trace's numeric id for an unrelated row,
+    so preserving ids risks either a silent `ON CONFLICT DO NOTHING`
+    no-op (the row appears copied but isn't -- silent data loss once the
+    source row is deleted after) or, worse, an accidental collision with an
+    unrelated row that happens to already exist at that id. Every row in
+    the subtree is therefore inserted *without* specifying `id` (the
+    destination's own sequence assigns a fresh one), and every in-subtree
+    foreign key (`spans.trace_rowid`, `span_annotations.span_rowid`,
+    `document_annotations.span_rowid`, `span_costs.trace_rowid`/
+    `span_rowid`, `span_cost_details.span_cost_id`) is rewritten in Python
+    to the newly-assigned id it now points to. `spans.parent_id` needs no
+    rewriting -- it's keyed on the OTel string `span_id`, not the integer
+    row id, and `span_id` itself is copied verbatim.
+
+    `project_sessions`/`project_session_annotations` are deliberately NOT
+    part of the moved subtree: a session is inherently multi-trace, so
+    moving one trace out of it can't sensibly move the whole session along.
+    `traces.project_session_rowid` is set to `NULL` on the copied row
+    instead of carried over, since the destination schema's own
+    `project_sessions` table has no row for the source session (copying the
+    value unmodified would violate the FK outright, or -- worse -- silently
+    attach to an unrelated session that happens to reuse the same row id in
+    the destination project's independent id sequence). This is a real
+    behavior difference from the flag-off path, where transferring a trace
+    has always left `project_session_rowid` pointed at the original
+    (shared-table) session unconditionally -- including when that leaves
+    the trace's session technically owned by a different project than the
+    trace itself, a pre-existing inconsistency, left unchanged there since
+    flag-off behavior must stay provably identical to before this stage.
+
+    Source-side cleanup is a single `DELETE FROM <source>.traces WHERE id =
+    :trace_rowid` per transfer -- every table in the subtree has `ON DELETE
+    CASCADE` on its FK into `traces` (directly, or transitively via
+    `spans`/`span_costs`), confirmed directly from the model definitions,
+    so deleting the trace row alone removes its entire subtree at the
+    database level; no separate per-table deletes are needed.
+    """
+    if engine.dialect.name != "postgresql":
+        raise RuntimeError("transfer_traces_between_projects requires PostgreSQL.")
+    async with engine.begin() as connection:
+        for trace_rowid, source_project_id, dest_project_id in transfers:
+            await _transfer_trace_subtree_on_connection(
+                connection, trace_rowid, source_project_id, dest_project_id
+            )
+
+
+async def _transfer_trace_subtree_on_connection(
+    connection: AsyncConnection,
+    trace_rowid: int,
+    source_project_id: int,
+    dest_project_id: int,
+) -> None:
+    source_schema = _project_schema_name(source_project_id)
+    dest_schema = _project_schema_name(dest_project_id)
+    source_metadata = _project_scoped_metadata(source_schema)
+    dest_metadata = _project_scoped_metadata(dest_schema)
+
+    def _table(metadata: MetaData, schema: str, model: Any) -> Table:
+        return metadata.tables[f"{schema}.{model.__tablename__}"]
+
+    src = {
+        model: _table(source_metadata, source_schema, model)
+        for model in _TRANSFERABLE_TRACE_SUBTREE_MODELS
+    }
+    dst = {
+        model: _table(dest_metadata, dest_schema, model)
+        for model in _TRANSFERABLE_TRACE_SUBTREE_MODELS
+    }
+
+    trace_row = (
+        (
+            await connection.execute(
+                select(src[models.Trace]).where(src[models.Trace].c.id == trace_rowid)
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if trace_row is None:
+        raise ValueError(f"Trace {trace_rowid} not found in project {source_project_id}'s schema.")
+    trace_values = dict(trace_row)
+    trace_values.pop("id")
+    trace_values["project_rowid"] = dest_project_id
+    trace_values["project_session_rowid"] = None
+    new_trace_id = (
+        await connection.execute(
+            insert(dst[models.Trace]).values(**trace_values).returning(dst[models.Trace].c.id)
+        )
+    ).scalar_one()
+
+    span_rows = (
+        (
+            await connection.execute(
+                select(src[models.Span]).where(src[models.Span].c.trace_rowid == trace_rowid)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    span_id_map: dict[int, int] = {}
+    for row in span_rows:
+        values = dict(row)
+        old_id = values.pop("id")
+        values["trace_rowid"] = new_trace_id
+        new_id = (
+            await connection.execute(
+                insert(dst[models.Span]).values(**values).returning(dst[models.Span].c.id)
+            )
+        ).scalar_one()
+        span_id_map[old_id] = new_id
+
+    trace_annotation_rows = (
+        (
+            await connection.execute(
+                select(src[models.TraceAnnotation]).where(
+                    src[models.TraceAnnotation].c.trace_rowid == trace_rowid
+                )
+            )
+        )
+        .mappings()
+        .all()
+    )
+    for row in trace_annotation_rows:
+        values = dict(row)
+        values.pop("id")
+        values["trace_rowid"] = new_trace_id
+        await connection.execute(insert(dst[models.TraceAnnotation]).values(**values))
+
+    for model in (models.SpanAnnotation, models.DocumentAnnotation):
+        rows = (
+            (
+                (
+                    await connection.execute(
+                        select(src[model]).where(src[model].c.span_rowid.in_(span_id_map.keys()))
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            if span_id_map
+            else []
+        )
+        for row in rows:
+            values = dict(row)
+            values.pop("id")
+            values["span_rowid"] = span_id_map[values["span_rowid"]]
+            await connection.execute(insert(dst[model]).values(**values))
+
+    span_cost_rows = (
+        (
+            await connection.execute(
+                select(src[models.SpanCost]).where(
+                    src[models.SpanCost].c.trace_rowid == trace_rowid
+                )
+            )
+        )
+        .mappings()
+        .all()
+    )
+    span_cost_id_map: dict[int, int] = {}
+    for row in span_cost_rows:
+        values = dict(row)
+        old_id = values.pop("id")
+        values["trace_rowid"] = new_trace_id
+        values["span_rowid"] = span_id_map[values["span_rowid"]]
+        new_id = (
+            await connection.execute(
+                insert(dst[models.SpanCost]).values(**values).returning(dst[models.SpanCost].c.id)
+            )
+        ).scalar_one()
+        span_cost_id_map[old_id] = new_id
+
+    if span_cost_id_map:
+        detail_rows = (
+            (
+                await connection.execute(
+                    select(src[models.SpanCostDetail]).where(
+                        src[models.SpanCostDetail].c.span_cost_id.in_(span_cost_id_map.keys())
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        for row in detail_rows:
+            values = dict(row)
+            values.pop("id")
+            values["span_cost_id"] = span_cost_id_map[values["span_cost_id"]]
+            await connection.execute(insert(dst[models.SpanCostDetail]).values(**values))
+
+    await connection.execute(delete(src[models.Trace]).where(src[models.Trace].c.id == trace_rowid))
 
 
 @contextlib.asynccontextmanager

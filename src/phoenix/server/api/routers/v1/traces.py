@@ -18,10 +18,15 @@ from starlette.requests import Request
 from starlette.responses import Response
 from strawberry.relay import GlobalID
 
+from phoenix.config import get_env_project_scoped_storage_enabled
 from phoenix.datetime_utils import normalize_datetime
 from phoenix.db import models
 from phoenix.db.helpers import SupportedSQLDialect, token_counts_by_trace
 from phoenix.db.insertion.helpers import as_kv, insert_on_conflict
+from phoenix.server.access.schema_provisioning import (
+    project_scoped_session,
+    transfer_traces_between_projects,
+)
 from phoenix.server.api.helpers.annotations import get_note_identifier
 from phoenix.server.api.routers.v1.annotations import TraceAnnotationData
 from phoenix.server.api.types.node import parse_project_scoped_node_id
@@ -642,18 +647,62 @@ async def transfer_traces(
     # mirroring DELETE /traces/{trace_identifier}.
     trace_rowids: set[int] = set()
     otel_trace_ids: set[str] = set()
+    global_id_project_ids: dict[int, int] = {}  # trace_rowid -> project_id, from the GlobalID
     for identifier in request_body.trace_identifiers:
         try:
             global_id = GlobalID.from_id(identifier)
             if global_id.type_name != TraceNodeType.__name__:
                 raise ValueError("not a Trace global id")
-            # Trace's node id is compound "<project_id>:<row_id>" (Stage
-            # 4b-1); only the row id is needed -- the source project is
-            # re-derived from the rows themselves just below.
-            _, trace_rowid = parse_project_scoped_node_id(global_id.node_id)
+            # Trace's node id is compound "<project_id>:<row_id>" (Stage 4b-1).
+            project_id, trace_rowid = parse_project_scoped_node_id(global_id.node_id)
             trace_rowids.add(trace_rowid)
+            global_id_project_ids[trace_rowid] = project_id
         except ValueError:
             otel_trace_ids.add(identifier)
+
+    if get_env_project_scoped_storage_enabled():
+        # Once ingest writes exclusively into per-project schemas, the shared
+        # `traces` table below no longer has post-cutover rows to look up --
+        # trust the GlobalID's embedded project_id instead (same decision
+        # made for the annotation create-mutations in Stage 4b-2d). A raw
+        # OTel trace_id carries no project context at all and can't be
+        # resolved this way; that's the same gap the REST annotation
+        # endpoints are blocked on, pending Stage 4b-3's OTel-ID index.
+        if otel_trace_ids:
+            raise HTTPException(
+                detail=(
+                    "Cannot transfer traces identified by OpenTelemetry trace_id while "
+                    "project-scoped storage is enabled; use each trace's GlobalID instead."
+                ),
+                status_code=422,
+            )
+        source_project_ids = set(global_id_project_ids.values())
+        if len(source_project_ids) > 1:
+            raise HTTPException(
+                detail="Cannot transfer traces from multiple projects",
+                status_code=422,
+            )
+        source_project_id = next(iter(source_project_ids))
+        async with request.app.state.db() as session:
+            project = await get_project_by_identifier(
+                session, request_body.destination_project_identifier
+            )
+        assert request.app.state.db.engine is not None
+        try:
+            await transfer_traces_between_projects(
+                request.app.state.db.engine,
+                [(trace_rowid, source_project_id, project.id) for trace_rowid in trace_rowids],
+            )
+        except ValueError:
+            raise HTTPException(detail="One or more traces not found", status_code=404)
+        request.state.event_queue.put(SpanDeleteEvent((source_project_id, project.id)))
+        return TransferTracesResponseBody(
+            data=TransferTracesData(
+                transferred_trace_count=len(trace_rowids),
+                destination_project_id=str(GlobalID(ProjectNodeType.__name__, str(project.id))),
+            )
+        )
+
     async with request.app.state.db() as session:
         project = await get_project_by_identifier(
             session, request_body.destination_project_identifier
@@ -727,6 +776,42 @@ async def delete_trace(
     Note: This deletes the entire trace, including all spans, which maintains data consistency
     and avoids orphaned spans or inconsistent cached cumulative fields.
     """
+    if get_env_project_scoped_storage_enabled():
+        # Deleting by rowid needs the project resolved *before* the delete
+        # (schema routing requires it up front), unlike the flag-off path
+        # below, which learns the project from the deleted row's own
+        # `RETURNING`. A GlobalID carries its project_id embedded (Stage
+        # 4b-1's compound id); a raw OTel trace_id carries no project
+        # context at all and can't be resolved this way -- the same gap
+        # the REST annotation endpoints are blocked on, pending Stage
+        # 4b-3's OTel-ID index.
+        try:
+            global_id = GlobalID.from_id(trace_identifier)
+            if global_id.type_name != "Trace":
+                raise ValueError("not a Trace global id")
+            project_id, trace_rowid = parse_project_scoped_node_id(global_id.node_id)
+        except Exception:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Cannot delete a trace identified by OpenTelemetry trace_id while "
+                    "project-scoped storage is enabled; use the trace's GlobalID instead."
+                ),
+            )
+        async with project_scoped_session(request.app.state.db, project_id) as session:
+            deleted_id = await session.scalar(
+                delete(models.Trace)
+                .where(models.Trace.id == trace_rowid)
+                .returning(models.Trace.id)
+            )
+        if deleted_id is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Trace with relay ID '{trace_identifier}' not found",
+            )
+        request.state.event_queue.put(SpanDeleteEvent((project_id,)))
+        return None
+
     async with request.app.state.db() as session:
         # Try to parse as GlobalID first, then fall back to trace_id
         try:
