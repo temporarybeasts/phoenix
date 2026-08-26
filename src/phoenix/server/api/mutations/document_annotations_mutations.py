@@ -8,6 +8,7 @@ from strawberry import UNSET, Info
 from phoenix.db import models
 from phoenix.db.helpers import SupportedSQLDialect
 from phoenix.db.insertion.helpers import OnConflict, insert_on_conflict
+from phoenix.server.access.resolution import get_unreadable_project_ids
 from phoenix.server.api.auth import IsLocked, IsNotReadOnly, IsNotViewer
 from phoenix.server.api.context import Context
 from phoenix.server.api.exceptions import BadRequest, NotFound, Unauthorized
@@ -91,19 +92,36 @@ class DocumentAnnotationMutationMixin:
             )
 
         async with info.context.db() as session:
-            # Fetch spans and validate document positions
-            num_docs_by_span: dict[int, int] = {
-                rowid: num_docs
-                async for rowid, num_docs in await session.stream(
-                    select(models.Span.id, models.Span.num_documents).where(
-                        models.Span.id.in_(span_rowids)
-                    )
-                )
-            }
+            # Fetch spans (with their project, via trace) and validate
+            # document positions.
+            num_docs_by_span: dict[int, int] = {}
+            project_id_by_span: dict[int, int] = {}
+            async for rowid, num_docs, project_rowid in await session.stream(
+                select(models.Span.id, models.Span.num_documents, models.Trace.project_rowid)
+                .join(models.Trace, models.Trace.id == models.Span.trace_rowid)
+                .where(models.Span.id.in_(span_rowids))
+            ):
+                num_docs_by_span[rowid] = num_docs
+                project_id_by_span[rowid] = project_rowid
 
             missing = span_rowids - set(num_docs_by_span.keys())
             if missing:
                 raise NotFound(f"Spans with row IDs {missing} do not exist.")
+
+            # Reject the whole batch up front, before any writes -- inserts
+            # below share one transaction with no savepoints, so one
+            # unreadable project would otherwise silently abort every other
+            # item in the batch too.
+            if user_id is not None:
+                assert isinstance(info.context.user, PhoenixUser)
+                unreadable_project_ids = await get_unreadable_project_ids(
+                    session, info.context.user, project_id_by_span.values()
+                )
+                if unreadable_project_ids:
+                    raise Unauthorized(
+                        "You do not have access to project(s) with id(s): "
+                        f"{sorted(unreadable_project_ids)}"
+                    )
 
             for idx, record in enumerate(records):
                 span_rowid = cast(int, record["span_rowid"])
