@@ -1,16 +1,19 @@
 """Batch model token-detail summaries by project and time range."""
 
 from collections import defaultdict
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import Select, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.functions import coalesce
 from strawberry.dataloader import DataLoader
 from typing_extensions import TypeAlias
 
 from phoenix.db import models
+from phoenix.server.access.schema_provisioning import project_scoped_read_connection
 from phoenix.server.api.dataloaders.types import (
     CostBreakdown,
     SpanCostDetailSummaryEntry,
@@ -61,11 +64,26 @@ class SpanCostDetailSummaryEntriesByModelAndScopeDataLoader(
         summaries: defaultdict[tuple[CostDetailSummaryScope, int], CostDetailSummaryEntries] = (
             defaultdict(list)
         )
-        async with self._db.read() as session:
-            for scope, model_ids in model_ids_by_scope.items():
-                rows = await session.stream(
-                    _build_cost_detail_summary_statement(model_ids=model_ids, scope=scope)
-                )
+        for scope, model_ids in model_ids_by_scope.items():
+            stmt = _build_cost_detail_summary_statement(model_ids=model_ids, scope=scope)
+            # A scope with a project_id is a real per-project query and can
+            # be routed into that project's own schema. A scope with no
+            # project_id is an intentionally cross-project, org-wide
+            # rollup (e.g. "total cost of this model across every
+            # project") -- there's no single project schema to route it
+            # into, so it stays on the shared engine, same as the other
+            # intentionally-cross-project cost/model aggregate loaders.
+            # Post-cutover this only reflects whatever historical data
+            # Stage 4b-2c's copy-only migration left in the shared schema,
+            # not new per-project writes -- an accepted, known limitation,
+            # not silently wrong.
+            cm: AbstractAsyncContextManager[AsyncSession]
+            if scope.project_id is not None:
+                cm = project_scoped_read_connection(self._db, scope.project_id)
+            else:
+                cm = self._db.read()
+            async with cm as session:
+                rows = await session.stream(stmt)
                 async for model_id, token_type, is_prompt, cost, tokens in rows:
                     summaries[(scope, model_id)].append(
                         SpanCostDetailSummaryEntry(

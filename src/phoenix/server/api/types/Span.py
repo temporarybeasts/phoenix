@@ -718,7 +718,7 @@ class Span(Node):
         if not num_documents:
             return []
         return await info.context.data_loaders.document_retrieval_metrics.load(
-            (self.id, evaluation_name or None, num_documents),
+            (self.id, self.project_id, evaluation_name or None, num_documents),
         )
 
     @strawberry.field
@@ -752,7 +752,7 @@ class Span(Node):
             before=before if isinstance(before, CursorString) else None,
         )
         span_rowids: Iterable[int] = await info.context.data_loaders.span_descendants.load(
-            (self.id, max_depth or None),
+            (self.id, self.project_id, max_depth or None),
         )
         data = [Span(id=span_rowid, project_id=self.project_id) for span_rowid in span_rowids]
         return connection_from_list(data=data, args=args)
@@ -846,7 +846,7 @@ class Span(Node):
         self, info: Info[Context, None]
     ) -> list[SpanCostDetailSummaryEntry]:
         loader = info.context.data_loaders.span_cost_detail_summary_entries_by_span
-        entries = await loader.load(self.id)
+        entries = await loader.load((self.id, self.project_id))
         return [
             SpanCostDetailSummaryEntry(
                 token_type=entry.token_type,

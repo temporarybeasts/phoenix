@@ -6,6 +6,7 @@ from strawberry.dataloader import DataLoader
 from typing_extensions import TypeAlias
 
 from phoenix.db import models
+from phoenix.server.access.schema_provisioning import project_scoped_read_connection
 from phoenix.server.api.dataloaders.types import (
     CostBreakdown,
     SpanCostDetailSummaryEntry,
@@ -13,7 +14,8 @@ from phoenix.server.api.dataloaders.types import (
 from phoenix.server.types import DbSessionFactory
 
 ProjectSessionRowId: TypeAlias = int
-Key: TypeAlias = ProjectSessionRowId
+ProjectId: TypeAlias = int
+Key: TypeAlias = tuple[ProjectSessionRowId, ProjectId]
 Result: TypeAlias = list[SpanCostDetailSummaryEntry]
 
 
@@ -23,35 +25,39 @@ class SpanCostDetailSummaryEntriesByProjectSessionDataLoader(DataLoader[Key, Res
         self._db = db
 
     async def _load_fn(self, keys: list[Key]) -> list[Result]:
+        by_project: dict[ProjectId, list[ProjectSessionRowId]] = defaultdict(list)
+        for session_rowid, project_id in keys:
+            by_project[project_id].append(session_rowid)
         pk = models.Trace.project_session_rowid
-        stmt = (
-            select(
-                pk,
-                models.SpanCostDetail.token_type,
-                models.SpanCostDetail.is_prompt,
-                coalesce(func.sum(models.SpanCostDetail.cost), 0).label("cost"),
-                coalesce(func.sum(models.SpanCostDetail.tokens), 0).label("tokens"),
-            )
-            .select_from(models.SpanCostDetail)
-            .join(models.SpanCost, models.SpanCostDetail.span_cost_id == models.SpanCost.id)
-            .join(models.Trace, models.SpanCost.trace_rowid == models.Trace.id)
-            .where(pk.in_(keys))
-            .group_by(pk, models.SpanCostDetail.token_type, models.SpanCostDetail.is_prompt)
-        )
         results: defaultdict[Key, Result] = defaultdict(list)
-        async with self._db.read() as session:
-            data = await session.stream(stmt)
-            async for (
-                id_,
-                token_type,
-                is_prompt,
-                cost,
-                tokens,
-            ) in data:
-                entry = SpanCostDetailSummaryEntry(
-                    token_type=token_type,
-                    is_prompt=is_prompt,
-                    value=CostBreakdown(tokens=tokens, cost=cost),
+        for project_id, session_rowids in by_project.items():
+            stmt = (
+                select(
+                    pk,
+                    models.SpanCostDetail.token_type,
+                    models.SpanCostDetail.is_prompt,
+                    coalesce(func.sum(models.SpanCostDetail.cost), 0).label("cost"),
+                    coalesce(func.sum(models.SpanCostDetail.tokens), 0).label("tokens"),
                 )
-                results[id_].append(entry)
-        return list(map(list, map(results.__getitem__, keys)))
+                .select_from(models.SpanCostDetail)
+                .join(models.SpanCost, models.SpanCostDetail.span_cost_id == models.SpanCost.id)
+                .join(models.Trace, models.SpanCost.trace_rowid == models.Trace.id)
+                .where(pk.in_(session_rowids))
+                .group_by(pk, models.SpanCostDetail.token_type, models.SpanCostDetail.is_prompt)
+            )
+            async with project_scoped_read_connection(self._db, project_id) as session:
+                data = await session.stream(stmt)
+                async for (
+                    id_,
+                    token_type,
+                    is_prompt,
+                    cost,
+                    tokens,
+                ) in data:
+                    entry = SpanCostDetailSummaryEntry(
+                        token_type=token_type,
+                        is_prompt=is_prompt,
+                        value=CostBreakdown(tokens=tokens, cost=cost),
+                    )
+                    results[id_, project_id].append(entry)
+        return [list(results[key]) for key in keys]

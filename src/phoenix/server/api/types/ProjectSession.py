@@ -108,21 +108,25 @@ class ProjectSession(Node):
         self,
         info: Info[Context, None],
     ) -> int:
-        return await info.context.data_loaders.session_num_traces.load(self.id)
+        return await info.context.data_loaders.session_num_traces.load((self.id, self.project_id))
 
     @strawberry.field
     async def num_traces_with_error(
         self,
         info: Info[Context, None],
     ) -> int:
-        return await info.context.data_loaders.session_num_traces_with_error.load(self.id)
+        return await info.context.data_loaders.session_num_traces_with_error.load(
+            (self.id, self.project_id)
+        )
 
     @strawberry.field
     async def first_input(
         self,
         info: Info[Context, None],
     ) -> Optional[SpanIOValue]:
-        record = await info.context.data_loaders.session_first_inputs.load(self.id)
+        record = await info.context.data_loaders.session_first_inputs.load(
+            (self.id, self.project_id)
+        )
         if record is None:
             return None
         return SpanIOValue(
@@ -138,7 +142,9 @@ class ProjectSession(Node):
         self,
         info: Info[Context, None],
     ) -> Optional[SpanIOValue]:
-        record = await info.context.data_loaders.session_last_outputs.load(self.id)
+        record = await info.context.data_loaders.session_last_outputs.load(
+            (self.id, self.project_id)
+        )
         if record is None:
             return None
         return SpanIOValue(
@@ -157,14 +163,16 @@ class ProjectSession(Node):
         self,
         info: Info[Context, None],
     ) -> Optional[str]:
-        return await info.context.data_loaders.session_user_ids.load(self.id)
+        return await info.context.data_loaders.session_user_ids.load((self.id, self.project_id))
 
     @strawberry.field
     async def token_usage(
         self,
         info: Info[Context, None],
     ) -> TokenUsage:
-        usage = await info.context.data_loaders.session_token_usages.load(self.id)
+        usage = await info.context.data_loaders.session_token_usages.load(
+            (self.id, self.project_id)
+        )
         return TokenUsage(
             prompt=usage.prompt,
             completion=usage.completion,
@@ -229,7 +237,7 @@ class ProjectSession(Node):
         probability: float,
     ) -> Optional[float]:
         return await info.context.data_loaders.session_trace_latency_ms_quantile.load(
-            (self.id, probability)
+            (self.id, self.project_id, probability)
         )
 
     @strawberry.field
@@ -238,7 +246,7 @@ class ProjectSession(Node):
         info: Info[Context, None],
     ) -> SpanCostSummary:
         loader = info.context.data_loaders.span_cost_summary_by_project_session
-        summary = await loader.load(self.id)
+        summary = await loader.load((self.id, self.project_id))
         return SpanCostSummary(
             prompt=CostBreakdown(
                 tokens=summary.prompt.tokens,
@@ -260,7 +268,7 @@ class ProjectSession(Node):
         info: Info[Context, None],
     ) -> list[SpanCostDetailSummaryEntry]:
         loader = info.context.data_loaders.span_cost_detail_summary_entries_by_project_session
-        summary = await loader.load(self.id)
+        summary = await loader.load((self.id, self.project_id))
         return [
             SpanCostDetailSummaryEntry(
                 token_type=entry.token_type,

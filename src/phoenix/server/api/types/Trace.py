@@ -227,7 +227,7 @@ class Trace(Node):
         self,
         info: Info[Context, None],
     ) -> Optional[str]:
-        return await info.context.data_loaders.trace_user_ids.load(self.id)
+        return await info.context.data_loaders.trace_user_ids.load((self.id, self.project_id))
 
     @strawberry.field
     async def num_spans(
@@ -511,7 +511,7 @@ class Trace(Node):
         info: Info[Context, None],
     ) -> list[SpanCostDetailSummaryEntry]:
         loader = info.context.data_loaders.span_cost_detail_summary_entries_by_trace
-        entries = await loader.load(self.id)
+        entries = await loader.load((self.id, self.project_id))
         return [
             SpanCostDetailSummaryEntry(
                 token_type=entry.token_type,

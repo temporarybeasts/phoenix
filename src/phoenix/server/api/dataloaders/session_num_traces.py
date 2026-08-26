@@ -1,10 +1,15 @@
+from collections import defaultdict
+
 from strawberry.dataloader import DataLoader
 from typing_extensions import TypeAlias
 
 from phoenix.db.session_aggregates import num_traces_by_session
+from phoenix.server.access.schema_provisioning import project_scoped_read_connection
 from phoenix.server.types import DbSessionFactory
 
-Key: TypeAlias = int
+SessionRowId: TypeAlias = int
+ProjectId: TypeAlias = int
+Key: TypeAlias = tuple[SessionRowId, ProjectId]
 Result: TypeAlias = int
 
 
@@ -14,9 +19,14 @@ class SessionNumTracesDataLoader(DataLoader[Key, Result]):
         self._db = db
 
     async def _load_fn(self, keys: list[Key]) -> list[Result]:
-        stmt = num_traces_by_session().as_grouped_subquery(keys)
-        async with self._db.read() as session:
-            result: dict[Key, int] = {
-                id_: value async for id_, value in await session.stream(stmt) if id_ is not None
-            }
+        by_project: dict[ProjectId, list[SessionRowId]] = defaultdict(list)
+        for session_rowid, project_id in keys:
+            by_project[project_id].append(session_rowid)
+        result: dict[Key, int] = {}
+        for project_id, session_rowids in by_project.items():
+            stmt = num_traces_by_session().as_grouped_subquery(session_rowids)
+            async with project_scoped_read_connection(self._db, project_id) as session:
+                async for id_, value in await session.stream(stmt):
+                    if id_ is not None:
+                        result[id_, project_id] = value
         return [result.get(key, 0) for key in keys]

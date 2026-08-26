@@ -8,12 +8,14 @@ from strawberry.dataloader import DataLoader
 from typing_extensions import TypeAlias
 
 from phoenix.db.models import Span
+from phoenix.server.access.schema_provisioning import project_scoped_read_connection
 from phoenix.server.types import DbSessionFactory
 
 SpanRowId: TypeAlias = int
+ProjectId: TypeAlias = int
 MaxDepth: TypeAlias = int
 
-Key: TypeAlias = tuple[SpanRowId, Optional[MaxDepth]]
+Key: TypeAlias = tuple[SpanRowId, ProjectId, Optional[MaxDepth]]
 Result: TypeAlias = list[SpanRowId]
 
 
@@ -23,12 +25,30 @@ class SpanDescendantsDataLoader(DataLoader[Key, Result]):
         self._db = db
 
     async def _load_fn(self, keys: Iterable[Key]) -> list[Result]:
+        keys = list(keys)
+        keys_by_project: defaultdict[ProjectId, list[tuple[SpanRowId, Optional[MaxDepth]]]] = (
+            defaultdict(list)
+        )
+        for span_rowid, project_id, max_depth in keys:
+            keys_by_project[project_id].append((span_rowid, max_depth))
+
+        results: defaultdict[Key, Result] = defaultdict(list)
+        for project_id, project_keys in keys_by_project.items():
+            await self._load_one_project(project_id, project_keys, results)
+        return [results[key].copy() for key in keys]
+
+    async def _load_one_project(
+        self,
+        project_id: ProjectId,
+        project_keys: list[tuple[SpanRowId, Optional[MaxDepth]]],
+        results: "defaultdict[Key, Result]",
+    ) -> None:
         # Create a values expression with Span.id and respective max_depth (which can be None).
         values = sa.values(
             sa.Column("root_rowid", sa.Integer),
             sa.Column("max_depth", sa.Integer, nullable=True),
             name="values",
-        ).data(list(keys))
+        ).data(project_keys)
 
         # Get the root spans with their depth limits by joining the values to the Span table.
         roots = (
@@ -91,13 +111,11 @@ class SpanDescendantsDataLoader(DataLoader[Key, Result]):
             descendants.c.id,
         )
 
-        results: defaultdict[Key, Result] = defaultdict(list)
-        async with self._db.read() as session:
+        async with project_scoped_read_connection(self._db, project_id) as session:
             data = await session.stream(stmt)
-            # Group results by root_rowid and max_depth (the Key tuple)
-            async for key, group in groupby(data, key=lambda d: tuple(d[1:])):
+            # Group results by root_rowid and max_depth (the sub-key tuple)
+            async for sub_key, group in groupby(data, key=lambda d: tuple(d[1:])):
                 # Extract span IDs (the database row IDs) and add them to the result list.
                 # The first column (index 0) from our query is Span.id.
-                results[key].extend(id_ for id_, *_ in group)
-
-        return [results[key].copy() for key in keys]
+                root_rowid, max_depth = sub_key
+                results[root_rowid, project_id, max_depth].extend(id_ for id_, *_ in group)

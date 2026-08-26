@@ -23,6 +23,7 @@ from typing_extensions import TypeAlias, assert_never
 
 from phoenix.db import models
 from phoenix.db.helpers import SupportedSQLDialect
+from phoenix.server.access.schema_provisioning import project_scoped_read_connection
 from phoenix.server.api.dataloaders.cache import TwoTierCache
 from phoenix.server.api.input_types.TimeRange import TimeRange
 from phoenix.server.session_filters import get_filtered_session_rowids_subquery
@@ -113,13 +114,25 @@ class LatencyMsQuantileDataLoader(DataLoader[Key, Result]):
         for position, key in enumerate(keys):
             segment, param = _cache_key_fn(key)
             arguments[segment][param].append(position)
-        async with self._db.read() as session:
-            dialect = SupportedSQLDialect(session.bind.dialect.name)
-            for segment, params in arguments.items():
-                async for position, quantile_value in _get_results(
-                    dialect, session, segment, params
-                ):
-                    results[position] = quantile_value
+        dialect = self._db.dialect
+        for segment, params in arguments.items():
+            # `params` keys on (project_rowid, probability) -- split by
+            # project_rowid so each project's rows are queried through its
+            # own schema, instead of the single cross-project query (a
+            # Postgres VALUES-join, or a SQLite per-probability GROUP BY)
+            # this used before project-scoped storage.
+            params_by_project: defaultdict[ProjectRowId, dict[Param, list[ResultPosition]]] = (
+                defaultdict(dict)
+            )
+            for param, positions in params.items():
+                project_rowid, _ = param
+                params_by_project[project_rowid][param] = positions
+            for project_rowid, project_params in params_by_project.items():
+                async with project_scoped_read_connection(self._db, project_rowid) as session:
+                    async for position, quantile_value in _get_results(
+                        dialect, session, segment, project_params
+                    ):
+                        results[position] = quantile_value
         return results
 
 

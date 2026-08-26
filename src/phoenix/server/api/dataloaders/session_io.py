@@ -1,3 +1,4 @@
+from collections import defaultdict
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Literal, Optional, cast
@@ -8,10 +9,13 @@ from strawberry.dataloader import DataLoader
 from typing_extensions import TypeAlias, assert_never
 
 from phoenix.db import models
+from phoenix.server.access.schema_provisioning import project_scoped_read_connection
 from phoenix.server.types import DbSessionFactory
 from phoenix.trace.schemas import MimeType
 
-Key: TypeAlias = int
+SessionRowId: TypeAlias = int
+ProjectId: TypeAlias = int
+Key: TypeAlias = tuple[SessionRowId, ProjectId]
 
 
 @dataclass(frozen=True)
@@ -78,7 +82,7 @@ class SessionIODataLoader(DataLoader[Key, Result]):
             assert_never(self._kind)
         return cast(Select[tuple[Optional[int], int, str, str, int]], stmt)
 
-    def _stmt(self, *keys: Key) -> Select[tuple[int, int, str, str]]:
+    def _stmt(self, *keys: SessionRowId) -> Select[tuple[int, int, str, str]]:
         subq = self._subq.where(models.Trace.project_session_rowid.in_(keys)).subquery()
         return (
             select(
@@ -92,18 +96,21 @@ class SessionIODataLoader(DataLoader[Key, Result]):
         )
 
     async def _load_fn(self, keys: list[Key]) -> list[Result]:
-        async with self._db.read() as session:
-            result: dict[Key, SessionIOValue] = {
-                id_: SessionIOValue(
-                    span_rowid=span_rowid,
-                    truncated_value=truncated_value,
-                    mime_type=MimeType(mime_type),
-                )
+        by_project: dict[ProjectId, list[SessionRowId]] = defaultdict(list)
+        for session_rowid, project_id in keys:
+            by_project[project_id].append(session_rowid)
+        result: dict[Key, SessionIOValue] = {}
+        for project_id, session_rowids in by_project.items():
+            async with project_scoped_read_connection(self._db, project_id) as session:
                 async for id_, span_rowid, truncated_value, mime_type in await session.stream(
-                    self._stmt(*keys)
-                )
-                if id_ is not None
-            }
+                    self._stmt(*session_rowids)
+                ):
+                    if id_ is not None:
+                        result[id_, project_id] = SessionIOValue(
+                            span_rowid=span_rowid,
+                            truncated_value=truncated_value,
+                            mime_type=MimeType(mime_type),
+                        )
         return [result.get(key) for key in keys]
 
 
