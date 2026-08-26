@@ -18,52 +18,23 @@ spike, unchanged by this migration, not something this file fills.
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from secrets import token_hex
-from typing import Any, AsyncIterator
 
 import pytest
-from pytest_postgresql.janitor import DatabaseJanitor
-from sqlalchemy import URL, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from phoenix.db.engines import aio_postgresql_engine
+from tests.unit.server.access.conftest import _run_alembic_downgrade, _run_alembic_upgrade
+
+# `migrated_postgresql_engine` is a fixture defined in this package's
+# conftest.py -- pytest discovers it automatically for every test file
+# here, no import needed (importing it would also shadow it via every
+# test's same-named parameter, tripping ruff's F811).
 
 pytestmark = pytest.mark.postgres_only
 
 _NOW = datetime.now(timezone.utc)
-
-
-@pytest.fixture(scope="function")
-async def migrated_postgresql_engine(postgresql_proc: Any) -> AsyncIterator[AsyncEngine]:
-    """A freshly created Postgres database migrated via real Alembic
-    (`aio_postgresql_engine(..., migrate=True)`), not `create_all` --
-    needed here specifically because this suite tests DDL (GRANT/RLS/
-    POLICY) that only migrations create, unlike `models.Base.metadata`.
-    """
-    dbname = f"phoenix_rls_test_{os.getpid()}_{token_hex(4)}"
-    janitor = DatabaseJanitor(
-        user=postgresql_proc.user,
-        host=postgresql_proc.host,
-        port=postgresql_proc.port,
-        version=postgresql_proc.version,
-        dbname=dbname,
-        password=postgresql_proc.password or None,
-    )
-    janitor.init()
-    url = URL.create(
-        "postgresql+asyncpg",
-        username=postgresql_proc.user,
-        password=postgresql_proc.password or None,
-        host=postgresql_proc.host,
-        port=postgresql_proc.port,
-        database=dbname,
-    )
-    engine = aio_postgresql_engine(url, migrate=True, log_migrations=False)
-    yield engine
-    await engine.dispose()
-    janitor.drop()
 
 
 async def _bypass(conn: AsyncConnection) -> None:
@@ -368,20 +339,6 @@ async def test_no_guc_is_fail_closed_across_new_tables(
                     ),
                     {"trace_rowid": seed.seeded["traces"]["a"]},
                 )
-
-
-def _run_alembic_downgrade(connection: Any, alembic_cfg: Any, revision: str) -> None:
-    from alembic import command
-
-    alembic_cfg.attributes["connection"] = connection
-    command.downgrade(alembic_cfg, revision)
-
-
-def _run_alembic_upgrade(connection: Any, alembic_cfg: Any) -> None:
-    from alembic import command
-
-    alembic_cfg.attributes["connection"] = connection
-    command.upgrade(alembic_cfg, "head")
 
 
 async def test_migration_downgrade_upgrade_roundtrip(

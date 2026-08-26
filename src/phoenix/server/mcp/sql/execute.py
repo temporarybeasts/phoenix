@@ -890,7 +890,18 @@ async def _execute_postgres(
         await session.execute(text(f"SET LOCAL statement_timeout = '{PG_STATEMENT_TIMEOUT_MS}'"))
         await session.execute(text("SET LOCAL work_mem = '64MB'"))
         try:
-            await session.execute(text("SET LOCAL temp_file_limit = '512MB'"))
+            # In a SAVEPOINT: a role permitted to SET TRANSACTION/TimeZone/
+            # statement_timeout/work_mem but not this specific superuser-only
+            # GUC (row-level isolation's phoenix_scoped role, confirmed
+            # directly against real Postgres) would otherwise leave the
+            # whole transaction aborted -- Postgres poisons the entire
+            # transaction on a failed statement unless it was inside a
+            # SAVEPOINT, so the bare try/except here previously caught the
+            # Python exception but not the server-side abort, and every
+            # later statement in this same session (the EXPLAIN and the
+            # query itself) failed with "current transaction is aborted."
+            async with session.begin_nested():
+                await session.execute(text("SET LOCAL temp_file_limit = '512MB'"))
         except SQLAlchemyError:
             # Not every role can set this. The statement still runs under the
             # server default rather than failing before it starts.
