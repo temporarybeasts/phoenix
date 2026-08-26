@@ -9,6 +9,7 @@ from strawberry import Info
 from strawberry.relay import GlobalID
 
 from phoenix.db import models
+from phoenix.server.access.schema_provisioning import project_scoped_session
 from phoenix.server.api.auth import IsLocked, IsNotReadOnly, IsNotViewer
 from phoenix.server.api.context import Context
 from phoenix.server.api.exceptions import BadRequest, Conflict, NotFound, Unauthorized
@@ -52,9 +53,13 @@ class ProjectSessionAnnotationMutationMixin:
             if input.project_session_id.type_name != "ProjectSession":
                 raise ValueError("not a ProjectSession global id")
             # ProjectSession's node id is compound "<project_id>:<row_id>"
-            # (Stage 4b-1); the client-supplied project_id is discarded here
-            # -- the authoritative project_id is looked up from the DB below.
-            _, project_session_id = parse_project_scoped_node_id(input.project_session_id.node_id)
+            # (Stage 4b-1). The project_id is server-issued -- see the
+            # equivalent comment in span_annotations_mutations.py's
+            # create_span_annotations -- so it's trusted directly rather
+            # than re-derived via a DB lookup.
+            session_project_id, project_session_id = parse_project_scoped_node_id(
+                input.project_session_id.node_id
+            )
         except ValueError:
             raise BadRequest(f"Invalid session ID: {input.project_session_id}")
 
@@ -65,13 +70,13 @@ class ProjectSessionAnnotationMutationMixin:
             identifier = get_user_identifier(user_id)
 
         try:
-            async with info.context.db() as session:
-                session_project_id = await session.scalar(
-                    select(models.ProjectSession.project_id).where(
+            async with project_scoped_session(info.context.db, session_project_id) as session:
+                session_exists = await session.scalar(
+                    select(models.ProjectSession.id).where(
                         models.ProjectSession.id == project_session_id
                     )
                 )
-                if session_project_id is None:
+                if session_exists is None:
                     raise NotFound(f"Could not find session with ID: {input.project_session_id}")
                 anno = models.ProjectSessionAnnotation(
                     project_session_id=project_session_id,

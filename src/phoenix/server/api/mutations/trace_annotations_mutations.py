@@ -1,3 +1,4 @@
+from collections import defaultdict
 from typing import Any, Optional, cast
 
 import strawberry
@@ -6,6 +7,7 @@ from starlette.requests import Request
 from strawberry import UNSET, Info
 
 from phoenix.db import models
+from phoenix.server.access.schema_provisioning import project_scoped_session
 from phoenix.server.api.auth import IsLocked, IsNotReadOnly, IsNotViewer
 from phoenix.server.api.context import Context
 from phoenix.server.api.exceptions import BadRequest, NotFound, Unauthorized
@@ -51,90 +53,101 @@ class TraceAnnotationMutationMixin:
 
         processed_annotations_map: dict[int, models.TraceAnnotation] = {}
 
-        trace_rowids = []
+        # Trace's node id is compound "<project_id>:<row_id>" (Stage 4b-1).
+        # The project_id is server-issued -- see the equivalent comment in
+        # span_annotations_mutations.py's create_span_annotations -- so
+        # it's trusted directly rather than re-derived via a DB lookup.
+        project_ids: list[int] = []
+        trace_rowids: list[int] = []
         for idx, annotation_input in enumerate(input):
             try:
                 if annotation_input.trace_id.type_name != "Trace":
                     raise ValueError("not a Trace global id")
-                # Trace's node id is compound "<project_id>:<row_id>" (Stage
-                # 4b-1); the client-supplied project_id is discarded here --
-                # the authoritative project_id is looked up from the DB below.
-                _, trace_rowid = parse_project_scoped_node_id(annotation_input.trace_id.node_id)
+                project_id, trace_rowid = parse_project_scoped_node_id(
+                    annotation_input.trace_id.node_id
+                )
             except ValueError:
                 raise BadRequest(
                     f"Invalid trace ID for annotation at index {idx}: {annotation_input.trace_id}"
                 )
+            project_ids.append(project_id)
             trace_rowids.append(trace_rowid)
 
-        async with info.context.db() as session:
-            project_id_by_trace_rowid: dict[int, int] = {
-                row.id: row.project_rowid
-                for row in await session.execute(
-                    select(models.Trace.id, models.Trace.project_rowid).where(
-                        models.Trace.id.in_(set(trace_rowids))
+        indices_by_project: dict[int, list[int]] = defaultdict(list)
+        for idx, project_id in enumerate(project_ids):
+            indices_by_project[project_id].append(idx)
+        project_id_by_trace_rowid: dict[int, int] = dict(zip(trace_rowids, project_ids))
+
+        for project_id, indices in indices_by_project.items():
+            async with project_scoped_session(info.context.db, project_id) as session:
+                group_trace_rowids = {trace_rowids[idx] for idx in indices}
+                existing_trace_rowids = set(
+                    await session.scalars(
+                        select(models.Trace.id).where(models.Trace.id.in_(group_trace_rowids))
                     )
                 )
-            }
-            existing_trace_rowids = set(project_id_by_trace_rowid)
-            missing_trace_ids = [
-                str(annotation_input.trace_id)
-                for trace_rowid, annotation_input in zip(trace_rowids, input)
-                if trace_rowid not in existing_trace_rowids
-            ]
-            if missing_trace_ids:
-                raise NotFound(f"Could not find traces with IDs: {missing_trace_ids}")
+                missing_trace_ids = [
+                    str(input[idx].trace_id)
+                    for idx in indices
+                    if trace_rowids[idx] not in existing_trace_rowids
+                ]
+                if missing_trace_ids:
+                    raise NotFound(f"Could not find traces with IDs: {missing_trace_ids}")
 
-            for idx, (trace_rowid, annotation_input) in enumerate(zip(trace_rowids, input)):
-                resolved_identifier = ""
-                if isinstance(annotation_input.identifier, str):
-                    resolved_identifier = annotation_input.identifier
-                elif annotation_input.source == AnnotationSource.APP and user_id is not None:
-                    resolved_identifier = get_user_identifier(user_id)
-                values = {
-                    "trace_rowid": trace_rowid,
-                    "name": annotation_input.name,
-                    "label": annotation_input.label,
-                    "score": annotation_input.score,
-                    "explanation": annotation_input.explanation,
-                    "annotator_kind": annotation_input.annotator_kind.value,
-                    "metadata_": annotation_input.metadata,
-                    "identifier": resolved_identifier,
-                    "source": annotation_input.source.value,
-                    "user_id": user_id,
-                }
+                for idx in indices:
+                    trace_rowid = trace_rowids[idx]
+                    annotation_input = input[idx]
+                    resolved_identifier = ""
+                    if isinstance(annotation_input.identifier, str):
+                        resolved_identifier = annotation_input.identifier
+                    elif annotation_input.source == AnnotationSource.APP and user_id is not None:
+                        resolved_identifier = get_user_identifier(user_id)
+                    values = {
+                        "trace_rowid": trace_rowid,
+                        "name": annotation_input.name,
+                        "label": annotation_input.label,
+                        "score": annotation_input.score,
+                        "explanation": annotation_input.explanation,
+                        "annotator_kind": annotation_input.annotator_kind.value,
+                        "metadata_": annotation_input.metadata,
+                        "identifier": resolved_identifier,
+                        "source": annotation_input.source.value,
+                        "user_id": user_id,
+                    }
 
-                processed_annotation: Optional[models.TraceAnnotation] = None
+                    processed_annotation: Optional[models.TraceAnnotation] = None
 
-                # Check if an annotation with this trace_rowid, name, and identifier already exists
-                q = select(models.TraceAnnotation).where(
-                    models.TraceAnnotation.trace_rowid == trace_rowid,
-                    models.TraceAnnotation.name == annotation_input.name,
-                    models.TraceAnnotation.identifier == resolved_identifier,
-                )
-                existing_annotation = await session.scalar(q)
+                    # Check if an annotation with this trace_rowid, name, and
+                    # identifier already exists
+                    q = select(models.TraceAnnotation).where(
+                        models.TraceAnnotation.trace_rowid == trace_rowid,
+                        models.TraceAnnotation.name == annotation_input.name,
+                        models.TraceAnnotation.identifier == resolved_identifier,
+                    )
+                    existing_annotation = await session.scalar(q)
 
-                if existing_annotation:
-                    # Update existing annotation
-                    existing_annotation.name = annotation_input.name
-                    existing_annotation.label = annotation_input.label
-                    existing_annotation.score = annotation_input.score
-                    existing_annotation.explanation = annotation_input.explanation
-                    existing_annotation.metadata_ = cast(dict[str, Any], annotation_input.metadata)
-                    existing_annotation.annotator_kind = annotation_input.annotator_kind.value
-                    existing_annotation.source = annotation_input.source.value
-                    existing_annotation.user_id = user_id
-                    session.add(existing_annotation)
-                    processed_annotation = existing_annotation
+                    if existing_annotation:
+                        # Update existing annotation
+                        existing_annotation.name = annotation_input.name
+                        existing_annotation.label = annotation_input.label
+                        existing_annotation.score = annotation_input.score
+                        existing_annotation.explanation = annotation_input.explanation
+                        existing_annotation.metadata_ = cast(
+                            dict[str, Any], annotation_input.metadata
+                        )
+                        existing_annotation.annotator_kind = annotation_input.annotator_kind.value
+                        existing_annotation.source = annotation_input.source.value
+                        existing_annotation.user_id = user_id
+                        session.add(existing_annotation)
+                        processed_annotation = existing_annotation
 
-                if processed_annotation is None:
-                    stmt = insert(models.TraceAnnotation).values(**values)
-                    stmt = stmt.returning(models.TraceAnnotation)
-                    result = await session.scalars(stmt)
-                    processed_annotation = result.one()
+                    if processed_annotation is None:
+                        stmt = insert(models.TraceAnnotation).values(**values)
+                        stmt = stmt.returning(models.TraceAnnotation)
+                        result = await session.scalars(stmt)
+                        processed_annotation = result.one()
 
-                processed_annotations_map[idx] = processed_annotation
-
-            await session.commit()
+                    processed_annotations_map[idx] = processed_annotation
 
         inserted_annotation_ids = tuple(anno.id for anno in processed_annotations_map.values())
         if inserted_annotation_ids:

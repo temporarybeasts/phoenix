@@ -1,3 +1,4 @@
+from collections import defaultdict
 from typing import Optional, cast
 
 import strawberry
@@ -6,8 +7,8 @@ from starlette.requests import Request
 from strawberry import UNSET, Info
 
 from phoenix.db import models
-from phoenix.db.helpers import SupportedSQLDialect
 from phoenix.db.insertion.helpers import OnConflict, insert_on_conflict
+from phoenix.server.access.schema_provisioning import project_scoped_session
 from phoenix.server.api.auth import IsLocked, IsNotReadOnly, IsNotViewer
 from phoenix.server.api.context import Context
 from phoenix.server.api.exceptions import BadRequest, NotFound, Unauthorized
@@ -49,22 +50,25 @@ class DocumentAnnotationMutationMixin:
         if "user" in request.scope and isinstance((user := info.context.user), PhoenixUser):
             user_id = int(user.identity)
 
-        # Parse input and build records
+        # Parse input and build records. Span's node id is compound
+        # "<project_id>:<row_id>" (Stage 4b-1); the project_id is
+        # server-issued -- see the equivalent comment in
+        # span_annotations_mutations.py's create_span_annotations -- so
+        # it's trusted directly rather than re-derived via a DB lookup.
         records: list[dict[str, object]] = []
-        span_rowids: set[int] = set()
+        project_id_by_span: dict[int, int] = {}
         for idx, annotation_input in enumerate(input):
             try:
                 if annotation_input.span_id.type_name != "Span":
                     raise ValueError("not a Span global id")
-                # Span's node id is compound "<project_id>:<row_id>" (Stage
-                # 4b-1); the client-supplied project_id is discarded here --
-                # the authoritative project_id is looked up from the DB below.
-                _, span_rowid = parse_project_scoped_node_id(annotation_input.span_id.node_id)
+                project_id, span_rowid = parse_project_scoped_node_id(
+                    annotation_input.span_id.node_id
+                )
             except ValueError:
                 raise BadRequest(
                     f"Invalid span ID for annotation at index {idx}: {annotation_input.span_id}"
                 )
-            span_rowids.add(span_rowid)
+            project_id_by_span[span_rowid] = project_id
 
             resolved_identifier = ""
             if isinstance(annotation_input.identifier, str):
@@ -98,71 +102,78 @@ class DocumentAnnotationMutationMixin:
                 }
             )
 
-        async with info.context.db() as session:
-            # Fetch spans and validate document positions
-            num_docs_by_span: dict[int, int] = {}
-            project_id_by_span: dict[int, int] = {}
-            async for rowid, num_docs, project_rowid in await session.stream(
-                select(models.Span.id, models.Span.num_documents, models.Trace.project_rowid)
-                .join(models.Trace, models.Span.trace_rowid == models.Trace.id)
-                .where(models.Span.id.in_(span_rowids))
-            ):
-                num_docs_by_span[rowid] = num_docs
-                project_id_by_span[rowid] = project_rowid
+        records_by_project: dict[int, list[dict[str, object]]] = defaultdict(list)
+        for record in records:
+            span_rowid = cast(int, record["span_rowid"])
+            records_by_project[project_id_by_span[span_rowid]].append(record)
 
-            missing = span_rowids - set(num_docs_by_span.keys())
-            if missing:
-                raise NotFound(f"Spans with row IDs {missing} do not exist.")
-
-            for idx, record in enumerate(records):
-                span_rowid = cast(int, record["span_rowid"])
-                doc_pos = cast(int, record["document_position"])
-                num_docs = num_docs_by_span[span_rowid]
-                if doc_pos not in range(num_docs):
-                    raise BadRequest(
-                        f"Document position {doc_pos} is out of bounds "
-                        f"for span at index {idx} (num_documents: {num_docs})"
+        dialect = info.context.db.dialect
+        all_annotations: list[models.DocumentAnnotation] = []
+        for project_id, project_records in records_by_project.items():
+            span_rowids = {cast(int, r["span_rowid"]) for r in project_records}
+            async with project_scoped_session(info.context.db, project_id) as session:
+                # Fetch spans and validate document positions
+                num_docs_by_span: dict[int, int] = {
+                    rowid: num_docs
+                    async for rowid, num_docs in await session.stream(
+                        select(models.Span.id, models.Span.num_documents).where(
+                            models.Span.id.in_(span_rowids)
+                        )
                     )
+                }
 
-            # Check for existing annotations owned by other users
-            unique_keys = [
-                (r["name"], r["span_rowid"], r["document_position"], r["identifier"])
-                for r in records
-            ]
-            existing_user_ids = (
-                await session.scalars(
-                    select(models.DocumentAnnotation.user_id)
-                    .where(
-                        tuple_(
-                            models.DocumentAnnotation.name,
-                            models.DocumentAnnotation.span_rowid,
-                            models.DocumentAnnotation.document_position,
-                            models.DocumentAnnotation.identifier,
-                        ).in_(unique_keys)
+                missing = span_rowids - set(num_docs_by_span.keys())
+                if missing:
+                    raise NotFound(f"Spans with row IDs {missing} do not exist.")
+
+                for idx, record in enumerate(project_records):
+                    span_rowid = cast(int, record["span_rowid"])
+                    doc_pos = cast(int, record["document_position"])
+                    num_docs = num_docs_by_span[span_rowid]
+                    if doc_pos not in range(num_docs):
+                        raise BadRequest(
+                            f"Document position {doc_pos} is out of bounds "
+                            f"for span at index {idx} (num_documents: {num_docs})"
+                        )
+
+                # Check for existing annotations owned by other users
+                unique_keys = [
+                    (r["name"], r["span_rowid"], r["document_position"], r["identifier"])
+                    for r in project_records
+                ]
+                existing_user_ids = (
+                    await session.scalars(
+                        select(models.DocumentAnnotation.user_id)
+                        .where(
+                            tuple_(
+                                models.DocumentAnnotation.name,
+                                models.DocumentAnnotation.span_rowid,
+                                models.DocumentAnnotation.document_position,
+                                models.DocumentAnnotation.identifier,
+                            ).in_(unique_keys)
+                        )
+                        .distinct()
                     )
-                    .distinct()
-                )
-            ).all()
-            for existing_user_id in existing_user_ids:
-                if existing_user_id != user_id:
-                    raise Unauthorized(
-                        "Cannot overwrite document annotation owned by another user."
-                    )
+                ).all()
+                for existing_user_id in existing_user_ids:
+                    if existing_user_id != user_id:
+                        raise Unauthorized(
+                            "Cannot overwrite document annotation owned by another user."
+                        )
 
-            dialect = SupportedSQLDialect(session.bind.dialect.name)
-            stmt = insert_on_conflict(
-                *records,
-                dialect=dialect,
-                table=models.DocumentAnnotation,
-                unique_by=("name", "span_rowid", "document_position", "identifier"),
-                on_conflict=OnConflict.DO_UPDATE,
-                constraint_name="uq_document_annotations_name_span_rowid_document_pos_identifier",
-            ).returning(models.DocumentAnnotation)
+                stmt = insert_on_conflict(
+                    *project_records,
+                    dialect=dialect,
+                    table=models.DocumentAnnotation,
+                    unique_by=("name", "span_rowid", "document_position", "identifier"),
+                    on_conflict=OnConflict.DO_UPDATE,
+                    constraint_name="uq_document_annotations_name_span_rowid_document_pos_identifier",
+                ).returning(models.DocumentAnnotation)
 
-            result = await session.scalars(stmt)
-            annotations = result.all()
+                result = await session.scalars(stmt)
+                all_annotations.extend(result.all())
 
-        # Publish event after successful commit (context manager auto-commits)
+        annotations = all_annotations
         annotation_ids = tuple(anno.id for anno in annotations)
         if annotation_ids:
             info.context.event_queue.put(DocumentAnnotationInsertEvent(annotation_ids))

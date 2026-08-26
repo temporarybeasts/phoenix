@@ -1,3 +1,4 @@
+from collections import defaultdict
 from typing import Any, Optional, cast
 
 import strawberry
@@ -6,6 +7,7 @@ from starlette.requests import Request
 from strawberry import UNSET, Info
 
 from phoenix.db import models
+from phoenix.server.access.schema_provisioning import project_scoped_session
 from phoenix.server.api.auth import IsLocked, IsNotReadOnly, IsNotViewer
 from phoenix.server.api.context import Context
 from phoenix.server.api.exceptions import BadRequest, NotFound, Unauthorized
@@ -54,126 +56,137 @@ class SpanAnnotationMutationMixin:
         if "user" in request.scope and isinstance((user := info.context.user), PhoenixUser):
             user_id = int(user.identity)
 
-        processed_annotations_map: dict[int, models.SpanAnnotation] = {}
-
-        span_rowids = []
+        # Span's node id is compound "<project_id>:<row_id>" (Stage 4b-1).
+        # The project_id is server-issued -- this fork embedded it when it
+        # originally returned the Span's GlobalID to the client, not
+        # arbitrary client input -- so it's trusted directly here rather
+        # than re-derived via a Span -> Trace join, which stops being
+        # reliable once ingest writes exclusively per-project (Stage
+        # 4b-2d): a span annotated shortly after being created wouldn't be
+        # found by a shared-schema lookup at all.
+        project_ids: list[int] = []
+        span_rowids: list[int] = []
         for idx, annotation_input in enumerate(input):
             try:
                 if annotation_input.span_id.type_name != "Span":
                     raise ValueError("not a Span global id")
-                # Span's node id is compound "<project_id>:<row_id>" (Stage
-                # 4b-1); the client-supplied project_id is discarded here --
-                # the authoritative project_id is looked up from the DB below.
-                _, span_rowid = parse_project_scoped_node_id(annotation_input.span_id.node_id)
+                project_id, span_rowid = parse_project_scoped_node_id(
+                    annotation_input.span_id.node_id
+                )
             except ValueError:
                 raise BadRequest(
                     f"Invalid span ID for annotation at index {idx}: {annotation_input.span_id}"
                 )
+            project_ids.append(project_id)
             span_rowids.append(span_rowid)
 
-        async with info.context.db() as session:
-            project_id_by_span_rowid: dict[int, int] = {
-                row.id: row.project_rowid
-                for row in await session.execute(
-                    select(models.Span.id, models.Trace.project_rowid)
-                    .join(models.Trace, models.Span.trace_rowid == models.Trace.id)
-                    .where(models.Span.id.in_(set(span_rowids)))
+        indices_by_project: dict[int, list[int]] = defaultdict(list)
+        for idx, project_id in enumerate(project_ids):
+            indices_by_project[project_id].append(idx)
+
+        processed_annotations_map: dict[int, models.SpanAnnotation] = {}
+        project_id_by_idx: dict[int, int] = dict(enumerate(project_ids))
+
+        for project_id, indices in indices_by_project.items():
+            async with project_scoped_session(info.context.db, project_id) as session:
+                group_span_rowids = {span_rowids[idx] for idx in indices}
+                existing_span_rowids = set(
+                    await session.scalars(
+                        select(models.Span.id).where(models.Span.id.in_(group_span_rowids))
+                    )
                 )
-            }
-            existing_span_rowids = set(project_id_by_span_rowid)
-            missing_span_ids = [
-                str(annotation_input.span_id)
-                for span_rowid, annotation_input in zip(span_rowids, input)
-                if span_rowid not in existing_span_rowids
-            ]
-            if missing_span_ids:
-                raise NotFound(f"Could not find spans with IDs: {missing_span_ids}")
+                missing_span_ids = [
+                    str(input[idx].span_id)
+                    for idx in indices
+                    if span_rowids[idx] not in existing_span_rowids
+                ]
+                if missing_span_ids:
+                    raise NotFound(f"Could not find spans with IDs: {missing_span_ids}")
 
-            for idx, (span_rowid, annotation_input) in enumerate(zip(span_rowids, input)):
-                resolved_identifier = ""
-                if isinstance(annotation_input.identifier, str):
-                    resolved_identifier = annotation_input.identifier
-                elif annotation_input.source == AnnotationSource.APP and user_id is not None:
-                    resolved_identifier = get_user_identifier(user_id)
-                values = {
-                    "span_rowid": span_rowid,
-                    "name": annotation_input.name,
-                    "label": annotation_input.label,
-                    "score": annotation_input.score,
-                    "explanation": annotation_input.explanation,
-                    "annotator_kind": annotation_input.annotator_kind.value,
-                    "metadata_": annotation_input.metadata,
-                    "identifier": resolved_identifier,
-                    "source": annotation_input.source.value,
-                    "user_id": user_id,
-                }
+                for idx in indices:
+                    span_rowid = span_rowids[idx]
+                    annotation_input = input[idx]
+                    resolved_identifier = ""
+                    if isinstance(annotation_input.identifier, str):
+                        resolved_identifier = annotation_input.identifier
+                    elif annotation_input.source == AnnotationSource.APP and user_id is not None:
+                        resolved_identifier = get_user_identifier(user_id)
+                    values = {
+                        "span_rowid": span_rowid,
+                        "name": annotation_input.name,
+                        "label": annotation_input.label,
+                        "score": annotation_input.score,
+                        "explanation": annotation_input.explanation,
+                        "annotator_kind": annotation_input.annotator_kind.value,
+                        "metadata_": annotation_input.metadata,
+                        "identifier": resolved_identifier,
+                        "source": annotation_input.source.value,
+                        "user_id": user_id,
+                    }
 
-                processed_annotation: Optional[models.SpanAnnotation] = None
+                    processed_annotation: Optional[models.SpanAnnotation] = None
 
-                q = select(models.SpanAnnotation).where(
-                    models.SpanAnnotation.span_rowid == span_rowid,
-                    models.SpanAnnotation.name == annotation_input.name,
-                    models.SpanAnnotation.identifier == resolved_identifier,
+                    q = select(models.SpanAnnotation).where(
+                        models.SpanAnnotation.span_rowid == span_rowid,
+                        models.SpanAnnotation.name == annotation_input.name,
+                        models.SpanAnnotation.identifier == resolved_identifier,
+                    )
+                    existing_annotation = await session.scalar(q)
+
+                    if existing_annotation:
+                        existing_annotation.name = annotation_input.name
+                        existing_annotation.label = annotation_input.label
+                        existing_annotation.score = annotation_input.score
+                        existing_annotation.explanation = annotation_input.explanation
+                        existing_annotation.metadata_ = cast(
+                            dict[str, Any], annotation_input.metadata
+                        )
+                        existing_annotation.annotator_kind = annotation_input.annotator_kind.value
+                        existing_annotation.source = annotation_input.source.value
+                        existing_annotation.user_id = user_id
+                        session.add(existing_annotation)
+                        processed_annotation = existing_annotation
+
+                    if processed_annotation is None:
+                        stmt = insert(models.SpanAnnotation).values(**values)
+                        stmt = stmt.returning(models.SpanAnnotation)
+                        result = await session.scalars(stmt)
+                        processed_annotation = result.one()
+
+                    processed_annotations_map[idx] = processed_annotation
+
+                await session.flush()
+
+                # Re-fetch this project's annotations to get the final
+                # state including DB defaults, still within this project's
+                # own scoped session.
+                group_annotation_ids = [processed_annotations_map[idx].id for idx in indices]
+                final_annotations_result = await session.scalars(
+                    select(models.SpanAnnotation).where(
+                        models.SpanAnnotation.id.in_(group_annotation_ids)
+                    )
                 )
-                existing_annotation = await session.scalar(q)
+                final_annotations_by_id = {anno.id: anno for anno in final_annotations_result.all()}
+                for idx in indices:
+                    processed_annotations_map[idx] = final_annotations_by_id[
+                        processed_annotations_map[idx].id
+                    ]
 
-                if existing_annotation:
-                    existing_annotation.name = annotation_input.name
-                    existing_annotation.label = annotation_input.label
-                    existing_annotation.score = annotation_input.score
-                    existing_annotation.explanation = annotation_input.explanation
-                    existing_annotation.metadata_ = cast(dict[str, Any], annotation_input.metadata)
-                    existing_annotation.annotator_kind = annotation_input.annotator_kind.value
-                    existing_annotation.source = annotation_input.source.value
-                    existing_annotation.user_id = user_id
-                    session.add(existing_annotation)
-                    processed_annotation = existing_annotation
+        # Order the final annotations according to the input order.
+        ordered_final_annotations = [processed_annotations_map[idx] for idx in range(len(input))]
+        processed_annotation_ids = [anno.id for anno in ordered_final_annotations]
 
-                if processed_annotation is None:
-                    stmt = insert(models.SpanAnnotation).values(**values)
-                    stmt = stmt.returning(models.SpanAnnotation)
-                    result = await session.scalars(stmt)
-                    processed_annotation = result.one()
+        if processed_annotation_ids:
+            info.context.event_queue.put(SpanAnnotationInsertEvent(tuple(processed_annotation_ids)))
 
-                processed_annotations_map[idx] = processed_annotation
-
-            # Collect the objects that were inserted or updated
-            processed_annotation_objects = list(processed_annotations_map.values())
-            processed_annotation_ids = [anno.id for anno in processed_annotation_objects]
-
-            # Commit the transaction to finalize the state in the DB
-            await session.flush()
-
-            # Re-fetch the annotations in a batch to get the final state including DB defaults
-            final_annotations_result = await session.scalars(
-                select(models.SpanAnnotation).where(
-                    models.SpanAnnotation.id.in_(processed_annotation_ids)
-                )
+        returned_annotations = [
+            SpanAnnotation(
+                id=anno.id,
+                project_id=project_id_by_idx[idx],
+                db_record=anno,
             )
-            final_annotations_by_id = {anno.id: anno for anno in final_annotations_result.all()}
-
-            # Order the final annotations according to the input order
-            ordered_final_annotations = [
-                final_annotations_by_id[id] for id in processed_annotation_ids
-            ]
-
-            # Put event on queue *after* successful commit
-            if ordered_final_annotations:
-                info.context.event_queue.put(
-                    SpanAnnotationInsertEvent(tuple(processed_annotation_ids))
-                )
-
-            # Convert the fully loaded annotations to GQL types
-            returned_annotations = [
-                SpanAnnotation(
-                    id=anno.id,
-                    project_id=project_id_by_span_rowid[anno.span_rowid],
-                    db_record=anno,
-                )
-                for anno in ordered_final_annotations
-            ]
-
-            await session.commit()
+            for idx, anno in enumerate(ordered_final_annotations)
+        ]
 
         return SpanAnnotationMutationPayload(
             span_annotations=returned_annotations,
@@ -192,21 +205,18 @@ class SpanAnnotationMutationMixin:
         try:
             if annotation_input.span_id.type_name != "Span":
                 raise ValueError("not a Span global id")
-            _, span_rowid = parse_project_scoped_node_id(annotation_input.span_id.node_id)
+            # Trusted directly from the compound GlobalID -- see the
+            # comment in create_span_annotations for why.
+            project_id, span_rowid = parse_project_scoped_node_id(annotation_input.span_id.node_id)
         except ValueError:
             raise BadRequest(f"Invalid span ID: {annotation_input.span_id}")
 
-        async with info.context.db() as session:
-            span_project_row = (
-                await session.execute(
-                    select(models.Span.id, models.Trace.project_rowid)
-                    .join(models.Trace, models.Span.trace_rowid == models.Trace.id)
-                    .where(models.Span.id == span_rowid)
-                )
-            ).first()
-            if span_project_row is None:
+        async with project_scoped_session(info.context.db, project_id) as session:
+            span_exists = await session.scalar(
+                select(models.Span.id).where(models.Span.id == span_rowid)
+            )
+            if span_exists is None:
                 raise NotFound(f"Could not find span with ID: {annotation_input.span_id}")
-            project_id = span_project_row.project_rowid
             note_identifier = get_note_identifier("px-span-note")
             values = {
                 "span_rowid": span_rowid,
@@ -230,7 +240,6 @@ class SpanAnnotationMutationMixin:
             returned_annotation = SpanAnnotation(
                 id=processed_annotation.id, project_id=project_id, db_record=processed_annotation
             )
-            await session.commit()
         return SpanAnnotationMutationPayload(
             span_annotations=[returned_annotation],
             query=Query(),
