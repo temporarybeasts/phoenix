@@ -23,6 +23,7 @@ from phoenix.datetime_utils import normalize_datetime
 from phoenix.db import models
 from phoenix.db.helpers import SupportedSQLDialect, token_counts_by_trace
 from phoenix.db.insertion.helpers import as_kv, insert_on_conflict
+from phoenix.server.access.resolution import get_unreadable_project_ids
 from phoenix.server.api.helpers.annotations import get_note_identifier
 from phoenix.server.api.routers.v1.annotations import TraceAnnotationData
 from phoenix.server.api.types.node import from_global_id_with_expected_type
@@ -440,14 +441,15 @@ async def annotate_traces(
 
     trace_ids = {p.trace_id for p in precursors}
     async with request.app.state.db() as session:
-        existing_traces = {
-            trace_id: id_
-            async for trace_id, id_ in await session.stream(
-                select(models.Trace.trace_id, models.Trace.id).filter(
-                    models.Trace.trace_id.in_(trace_ids)
-                )
+        existing_traces: dict[str, int] = {}
+        project_id_by_trace_rowid: dict[int, int] = {}
+        async for trace_id, id_, project_rowid in await session.stream(
+            select(models.Trace.trace_id, models.Trace.id, models.Trace.project_rowid).filter(
+                models.Trace.trace_id.in_(trace_ids)
             )
-        }
+        ):
+            existing_traces[trace_id] = id_
+            project_id_by_trace_rowid[id_] = project_rowid
 
         missing_trace_ids = trace_ids - set(existing_traces.keys())
         if missing_trace_ids:
@@ -455,6 +457,24 @@ async def annotate_traces(
                 detail=f"Traces with IDs {', '.join(missing_trace_ids)} do not exist.",
                 status_code=404,
             )
+
+        # Reject the whole batch up front, before any writes -- the insert
+        # loop below shares one transaction with no savepoints, so one
+        # unreadable project would otherwise silently abort every other
+        # item in the batch too.
+        if user_id is not None:
+            assert isinstance(request.user, PhoenixUser)
+            unreadable_project_ids = await get_unreadable_project_ids(
+                session, request.user, project_id_by_trace_rowid.values()
+            )
+            if unreadable_project_ids:
+                raise HTTPException(
+                    detail=(
+                        "You do not have access to project(s) with id(s): "
+                        f"{sorted(unreadable_project_ids)}"
+                    ),
+                    status_code=403,
+                )
         inserted_ids = []
         dialect = SupportedSQLDialect(session.bind.dialect.name)
         for p in precursors:

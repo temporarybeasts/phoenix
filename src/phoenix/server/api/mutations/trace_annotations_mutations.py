@@ -6,6 +6,7 @@ from starlette.requests import Request
 from strawberry import UNSET, Info
 
 from phoenix.db import models
+from phoenix.server.access.resolution import get_unreadable_project_ids
 from phoenix.server.api.auth import IsLocked, IsNotReadOnly, IsNotViewer
 from phoenix.server.api.context import Context
 from phoenix.server.api.exceptions import BadRequest, NotFound, Unauthorized
@@ -59,11 +60,15 @@ class TraceAnnotationMutationMixin:
             trace_rowids.append(trace_rowid)
 
         async with info.context.db() as session:
-            existing_trace_rowids = set(
-                await session.scalars(
-                    select(models.Trace.id).where(models.Trace.id.in_(set(trace_rowids)))
+            trace_id_to_project_id: dict[int, int] = {
+                trace_id: project_rowid
+                for trace_id, project_rowid in await session.execute(
+                    select(models.Trace.id, models.Trace.project_rowid).where(
+                        models.Trace.id.in_(set(trace_rowids))
+                    )
                 )
-            )
+            }
+            existing_trace_rowids = set(trace_id_to_project_id)
             missing_trace_ids = [
                 str(annotation_input.trace_id)
                 for trace_rowid, annotation_input in zip(trace_rowids, input)
@@ -71,6 +76,21 @@ class TraceAnnotationMutationMixin:
             ]
             if missing_trace_ids:
                 raise NotFound(f"Could not find traces with IDs: {missing_trace_ids}")
+
+            # Reject the whole batch up front, before any writes -- the loop
+            # below shares one transaction with no savepoints, so one
+            # unreadable project would otherwise silently abort every other
+            # item in the batch too.
+            if user_id is not None:
+                assert isinstance(info.context.user, PhoenixUser)
+                unreadable_project_ids = await get_unreadable_project_ids(
+                    session, info.context.user, trace_id_to_project_id.values()
+                )
+                if unreadable_project_ids:
+                    raise Unauthorized(
+                        "You do not have access to project(s) with id(s): "
+                        f"{sorted(unreadable_project_ids)}"
+                    )
 
             for idx, (trace_rowid, annotation_input) in enumerate(zip(trace_rowids, input)):
                 resolved_identifier = ""

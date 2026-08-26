@@ -15,6 +15,7 @@ from phoenix.db import models
 from phoenix.db.helpers import SupportedSQLDialect
 from phoenix.db.insertion.helpers import as_kv, insert_on_conflict
 from phoenix.db.session_aggregates import SESSION_ROWID, token_counts_by_session
+from phoenix.server.access.resolution import get_unreadable_project_ids
 from phoenix.server.api.helpers.annotations import get_note_identifier
 from phoenix.server.api.routers.v1.models import V1RoutesBaseModel
 from phoenix.server.api.routers.v1.utils import (
@@ -459,14 +460,17 @@ async def annotate_sessions(
 
     session_ids = {p.session_id for p in precursors}
     async with request.app.state.db() as session:
-        existing_sessions = {
-            session_id: rowid
-            async for session_id, rowid in await session.stream(
-                select(models.ProjectSession.session_id, models.ProjectSession.id).filter(
-                    models.ProjectSession.session_id.in_(session_ids)
-                )
-            )
-        }
+        existing_sessions: dict[str, int] = {}
+        project_id_by_session_rowid: dict[int, int] = {}
+        async for session_id, rowid, project_id in await session.stream(
+            select(
+                models.ProjectSession.session_id,
+                models.ProjectSession.id,
+                models.ProjectSession.project_id,
+            ).filter(models.ProjectSession.session_id.in_(session_ids))
+        ):
+            existing_sessions[session_id] = rowid
+            project_id_by_session_rowid[rowid] = project_id
 
     missing_session_ids = session_ids - set(existing_sessions.keys())
     # We prefer to fail the entire operation if there are missing sessions in sync mode
@@ -475,6 +479,25 @@ async def annotate_sessions(
             detail=f"Sessions with IDs {', '.join(missing_session_ids)} do not exist.",
             status_code=404,
         )
+
+    # Reject the whole batch up front, before any writes -- the insert loop
+    # below shares one transaction with no savepoints, so one unreadable
+    # project would otherwise silently abort every other item in the batch
+    # too.
+    if user_id is not None:
+        assert isinstance(request.user, PhoenixUser)
+        async with request.app.state.db() as session:
+            unreadable_project_ids = await get_unreadable_project_ids(
+                session, request.user, project_id_by_session_rowid.values()
+            )
+        if unreadable_project_ids:
+            raise HTTPException(
+                detail=(
+                    "You do not have access to project(s) with id(s): "
+                    f"{sorted(unreadable_project_ids)}"
+                ),
+                status_code=403,
+            )
 
     async with request.app.state.db() as session:
         inserted_ids = []

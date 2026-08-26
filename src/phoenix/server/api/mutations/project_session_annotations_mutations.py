@@ -1,6 +1,7 @@
 from typing import Any, Optional, cast
 
 import strawberry
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError as PostgreSQLIntegrityError
 from sqlean.dbapi2 import IntegrityError as SQLiteIntegrityError  # type: ignore[import-untyped]
 from starlette.requests import Request
@@ -59,6 +60,25 @@ class ProjectSessionAnnotationMutationMixin:
 
         try:
             async with info.context.db() as session:
+                if user_id is not None:
+                    project_id = await session.scalar(
+                        select(models.ProjectSession.project_id).where(
+                            models.ProjectSession.id == project_session_id
+                        )
+                    )
+                    if project_id is None:
+                        # Either the session genuinely doesn't exist, or it
+                        # exists in a project this user can't read -- RLS
+                        # makes those indistinguishable to a restricted
+                        # session's own SELECT (an inaccessible row is
+                        # invisible, not merely write-protected), the same
+                        # fail-closed shape the other 3 annotation types'
+                        # own pre-existing missing-row checks already rely
+                        # on. The bug this replaces: silently skipping the
+                        # check on `project_id is None` let the INSERT
+                        # proceed to an unhandled WITH CHECK violation
+                        # instead of this clean rejection.
+                        raise NotFound(f"Could not find session: {input.project_session_id}")
                 anno = models.ProjectSessionAnnotation(
                     project_session_id=project_session_id,
                     name=input.name,

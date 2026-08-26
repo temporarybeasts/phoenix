@@ -6,6 +6,7 @@ from starlette.requests import Request
 from strawberry import UNSET, Info
 
 from phoenix.db import models
+from phoenix.server.access.resolution import get_unreadable_project_ids
 from phoenix.server.api.auth import IsLocked, IsNotReadOnly, IsNotViewer
 from phoenix.server.api.context import Context
 from phoenix.server.api.exceptions import BadRequest, NotFound, Unauthorized
@@ -64,11 +65,15 @@ class SpanAnnotationMutationMixin:
             span_rowids.append(span_rowid)
 
         async with info.context.db() as session:
-            existing_span_rowids = set(
-                await session.scalars(
-                    select(models.Span.id).where(models.Span.id.in_(set(span_rowids)))
+            span_id_to_project_id: dict[int, int] = {
+                span_id: project_rowid
+                for span_id, project_rowid in await session.execute(
+                    select(models.Span.id, models.Trace.project_rowid)
+                    .join(models.Trace, models.Trace.id == models.Span.trace_rowid)
+                    .where(models.Span.id.in_(set(span_rowids)))
                 )
-            )
+            }
+            existing_span_rowids = set(span_id_to_project_id)
             missing_span_ids = [
                 str(annotation_input.span_id)
                 for span_rowid, annotation_input in zip(span_rowids, input)
@@ -76,6 +81,22 @@ class SpanAnnotationMutationMixin:
             ]
             if missing_span_ids:
                 raise NotFound(f"Could not find spans with IDs: {missing_span_ids}")
+
+            # Reject the whole batch up front, before any writes, rather than
+            # letting a WITH CHECK violation abort mid-loop -- the loop below
+            # shares one transaction with no savepoints, so one unreadable
+            # project would otherwise silently roll back every other item in
+            # the batch too, surfacing as an opaque, unhelpful error.
+            if user_id is not None:
+                assert isinstance(info.context.user, PhoenixUser)
+                unreadable_project_ids = await get_unreadable_project_ids(
+                    session, info.context.user, span_id_to_project_id.values()
+                )
+                if unreadable_project_ids:
+                    raise Unauthorized(
+                        "You do not have access to project(s) with id(s): "
+                        f"{sorted(unreadable_project_ids)}"
+                    )
 
             for idx, (span_rowid, annotation_input) in enumerate(zip(span_rowids, input)):
                 resolved_identifier = ""

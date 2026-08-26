@@ -21,6 +21,7 @@ from phoenix.datetime_utils import is_timezone_aware, normalize_datetime
 from phoenix.db import models
 from phoenix.db.helpers import SupportedSQLDialect, get_ancestor_span_rowids
 from phoenix.db.insertion.helpers import as_kv, insert_on_conflict
+from phoenix.server.access.resolution import get_unreadable_project_ids
 from phoenix.server.api.helpers.annotations import get_note_identifier
 from phoenix.server.api.routers.utils import df_to_bytes
 from phoenix.server.api.routers.v1.annotations import SpanAnnotationData
@@ -1173,14 +1174,15 @@ async def annotate_spans(
 
     span_ids = {p.span_id for p in precursors}
     async with request.app.state.db() as session:
-        existing_spans = {
-            span_id: id_
-            async for span_id, id_ in await session.stream(
-                select(models.Span.span_id, models.Span.id).filter(
-                    models.Span.span_id.in_(span_ids)
-                )
-            )
-        }
+        existing_spans: dict[str, int] = {}
+        project_id_by_span_rowid: dict[int, int] = {}
+        async for span_id, id_, project_rowid in await session.stream(
+            select(models.Span.span_id, models.Span.id, models.Trace.project_rowid)
+            .join(models.Trace, models.Trace.id == models.Span.trace_rowid)
+            .filter(models.Span.span_id.in_(span_ids))
+        ):
+            existing_spans[span_id] = id_
+            project_id_by_span_rowid[id_] = project_rowid
 
         missing_span_ids = span_ids - set(existing_spans.keys())
         if missing_span_ids:
@@ -1188,6 +1190,24 @@ async def annotate_spans(
                 detail=f"Spans with IDs {', '.join(missing_span_ids)} do not exist.",
                 status_code=404,
             )
+
+        # Reject the whole batch up front, before any writes -- the insert
+        # loop below shares one transaction with no savepoints, so one
+        # unreadable project would otherwise silently abort every other
+        # item in the batch too.
+        if user_id is not None:
+            assert isinstance(request.user, PhoenixUser)
+            unreadable_project_ids = await get_unreadable_project_ids(
+                session, request.user, project_id_by_span_rowid.values()
+            )
+            if unreadable_project_ids:
+                raise HTTPException(
+                    detail=(
+                        "You do not have access to project(s) with id(s): "
+                        f"{sorted(unreadable_project_ids)}"
+                    ),
+                    status_code=403,
+                )
         inserted_ids = []
         dialect = SupportedSQLDialect(session.bind.dialect.name)
         for p in precursors:
