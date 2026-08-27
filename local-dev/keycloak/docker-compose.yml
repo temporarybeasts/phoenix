@@ -1,0 +1,19 @@
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: start-dev --import-realm
+    environment:
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_ADMIN_PASSWORD=admin
+      # Both the browser and Phoenix (run natively on the host per this
+      # stage's README, not in a container) reach Keycloak at the same
+      # address, so a single hostname avoids the classic container-network
+      # vs. browser hostname mismatch in the discovery document.
+      - KC_HOSTNAME=localhost
+      - KC_HOSTNAME_PORT=8080
+      - KC_HOSTNAME_STRICT=false
+      - KC_HTTP_ENABLED=true
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
