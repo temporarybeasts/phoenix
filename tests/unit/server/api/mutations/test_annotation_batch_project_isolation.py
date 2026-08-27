@@ -41,18 +41,20 @@ from __future__ import annotations
 import contextlib
 from datetime import datetime, timedelta, timezone
 from secrets import token_hex
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 import httpx
 import pytest
+import yaml
 from asgi_lifespan import LifespanManager
 from fastapi import FastAPI
 from pydantic import SecretStr
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.types import ASGIApp
 
 from phoenix.db import models
+from phoenix.server.access import resolution
 from phoenix.server.app import _db, create_app
 from phoenix.server.jwt_store import JwtStore
 from phoenix.server.types import (
@@ -143,19 +145,32 @@ async def _create_member_with_token(db: DbSessionFactory) -> tuple[int, str]:
     return user_id, str(access_token)
 
 
-async def _grant_project_read(db: DbSessionFactory, *, user_id: int, project_id: int) -> None:
+async def _grant_project_read(
+    db: DbSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    *,
+    user_id: int,
+    project_name: str,
+) -> None:
+    """Grants access via an IdP group mapped to the project through the
+    declarative config file, with the user directly seeded as a member of
+    that group -- standing in for what a real OIDC login would populate on
+    `users.idp_groups`."""
+    group_name = f"group-{token_hex(4)}"
+    mapping_file = tmp_path / f"mapping-{token_hex(4)}.yaml"
+    mapping_file.write_text(
+        yaml.dump([{"idp_group": group_name, "projects": [project_name], "role": "viewer"}])
+    )
+    monkeypatch.setenv("PHOENIX_ACCESS_CONTROL_GROUP_MAPPING_FILE", str(mapping_file))
+    resolution._mapping_cache = None
     async with db() as session:
-        session.add(
-            models.ProjectGrant(
-                project_id=project_id,
-                user_id=user_id,
-                permission="project:read",
-                source="manual",
-            )
+        await session.execute(
+            update(models.User).where(models.User.id == user_id).values(idp_groups=[group_name])
         )
 
 
-async def _seed_project_with_trace_and_span(db: DbSessionFactory, *, name: str) -> dict[str, int]:
+async def _seed_project_with_trace_and_span(db: DbSessionFactory, *, name: str) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     async with db() as session:
         project = models.Project(name=name)
@@ -184,10 +199,15 @@ async def _seed_project_with_trace_and_span(db: DbSessionFactory, *, name: str) 
         )
         session.add(span)
         await session.flush()
-        return {"project_id": project.id, "trace_rowid": trace.id, "span_rowid": span.id}
+        return {
+            "project_id": project.id,
+            "project_name": name,
+            "trace_rowid": trace.id,
+            "span_rowid": span.id,
+        }
 
 
-async def _seed_project_with_session(db: DbSessionFactory, *, name: str) -> dict[str, int]:
+async def _seed_project_with_session(db: DbSessionFactory, *, name: str) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     async with db() as session:
         project = models.Project(name=name)
@@ -198,7 +218,11 @@ async def _seed_project_with_session(db: DbSessionFactory, *, name: str) -> dict
         )
         session.add(project_session)
         await session.flush()
-        return {"project_id": project.id, "session_rowid": project_session.id}
+        return {
+            "project_id": project.id,
+            "project_name": name,
+            "session_rowid": project_session.id,
+        }
 
 
 def _gid(type_name: str, rowid: int) -> str:
@@ -216,11 +240,15 @@ class TestBatchAnnotationMixedProjectRejection:
         self,
         db: DbSessionFactory,
         asgi_app: ASGIApp,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Any,
     ) -> None:
         granted = await _seed_project_with_trace_and_span(db, name=f"granted-{token_hex(4)}")
         ungranted = await _seed_project_with_trace_and_span(db, name=f"ungranted-{token_hex(4)}")
         user_id, token = await _create_member_with_token(db)
-        await _grant_project_read(db, user_id=user_id, project_id=granted["project_id"])
+        await _grant_project_read(
+            db, monkeypatch, tmp_path, user_id=user_id, project_name=granted["project_name"]
+        )
 
         httpx_client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=asgi_app),
@@ -269,11 +297,15 @@ class TestBatchAnnotationMixedProjectRejection:
         self,
         db: DbSessionFactory,
         asgi_app: ASGIApp,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Any,
     ) -> None:
         granted = await _seed_project_with_trace_and_span(db, name=f"granted-{token_hex(4)}")
         ungranted = await _seed_project_with_trace_and_span(db, name=f"ungranted-{token_hex(4)}")
         user_id, token = await _create_member_with_token(db)
-        await _grant_project_read(db, user_id=user_id, project_id=granted["project_id"])
+        await _grant_project_read(
+            db, monkeypatch, tmp_path, user_id=user_id, project_name=granted["project_name"]
+        )
 
         httpx_client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=asgi_app),
@@ -319,11 +351,15 @@ class TestBatchAnnotationMixedProjectRejection:
         self,
         db: DbSessionFactory,
         asgi_app: ASGIApp,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Any,
     ) -> None:
         granted = await _seed_project_with_trace_and_span(db, name=f"granted-{token_hex(4)}")
         ungranted = await _seed_project_with_trace_and_span(db, name=f"ungranted-{token_hex(4)}")
         user_id, token = await _create_member_with_token(db)
-        await _grant_project_read(db, user_id=user_id, project_id=granted["project_id"])
+        await _grant_project_read(
+            db, monkeypatch, tmp_path, user_id=user_id, project_name=granted["project_name"]
+        )
 
         async with db() as session:
             granted_span_id = await session.scalar(
@@ -370,12 +406,16 @@ class TestBatchAnnotationMixedProjectRejection:
         self,
         db: DbSessionFactory,
         asgi_app: ASGIApp,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Any,
     ) -> None:
         """Not a false-positive block on the common case: a batch entirely
         within one granted project."""
         granted = await _seed_project_with_trace_and_span(db, name=f"granted-{token_hex(4)}")
         user_id, token = await _create_member_with_token(db)
-        await _grant_project_read(db, user_id=user_id, project_id=granted["project_id"])
+        await _grant_project_read(
+            db, monkeypatch, tmp_path, user_id=user_id, project_name=granted["project_name"]
+        )
 
         httpx_client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=asgi_app),
@@ -418,11 +458,15 @@ class TestCreateProjectSessionAnnotationRejectsUnreadableProject:
         self,
         db: DbSessionFactory,
         asgi_app: ASGIApp,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Any,
     ) -> None:
         granted = await _seed_project_with_session(db, name=f"granted-{token_hex(4)}")
         ungranted = await _seed_project_with_session(db, name=f"ungranted-{token_hex(4)}")
         user_id, token = await _create_member_with_token(db)
-        await _grant_project_read(db, user_id=user_id, project_id=granted["project_id"])
+        await _grant_project_read(
+            db, monkeypatch, tmp_path, user_id=user_id, project_name=granted["project_name"]
+        )
 
         httpx_client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=asgi_app),
@@ -464,10 +508,14 @@ class TestCreateProjectSessionAnnotationRejectsUnreadableProject:
         self,
         db: DbSessionFactory,
         asgi_app: ASGIApp,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Any,
     ) -> None:
         granted = await _seed_project_with_session(db, name=f"granted-{token_hex(4)}")
         user_id, token = await _create_member_with_token(db)
-        await _grant_project_read(db, user_id=user_id, project_id=granted["project_id"])
+        await _grant_project_read(
+            db, monkeypatch, tmp_path, user_id=user_id, project_name=granted["project_name"]
+        )
 
         httpx_client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=asgi_app),

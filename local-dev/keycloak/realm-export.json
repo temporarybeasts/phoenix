@@ -4,7 +4,9 @@
   "sslRequired": "none",
   "groups": [
     { "name": "phoenix-admins" },
-    { "name": "phoenix-users" }
+    { "name": "phoenix-users" },
+    { "name": "demo-project-alpha" },
+    { "name": "demo-project-beta" }
   ],
   "clients": [
     {
@@ -42,6 +44,8 @@
       "enabled": true,
       "email": "alice@example.com",
       "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Admin",
       "credentials": [{ "type": "password", "value": "password", "temporary": false }],
       "groups": ["/phoenix-admins"]
     },
@@ -50,16 +54,30 @@
       "enabled": true,
       "email": "bob@example.com",
       "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "User",
       "credentials": [{ "type": "password", "value": "password", "temporary": false }],
-      "groups": ["/phoenix-users"]
+      "groups": ["/phoenix-users", "/demo-project-alpha"]
     },
     {
       "username": "carol-outsider",
       "enabled": true,
       "email": "carol@example.com",
       "emailVerified": true,
+      "firstName": "Carol",
+      "lastName": "Outsider",
       "credentials": [{ "type": "password", "value": "password", "temporary": false }],
       "groups": []
+    },
+    {
+      "username": "dave-user",
+      "enabled": true,
+      "email": "dave@example.com",
+      "emailVerified": true,
+      "firstName": "Dave",
+      "lastName": "User",
+      "credentials": [{ "type": "password", "value": "password", "temporary": false }],
+      "groups": ["/phoenix-users", "/demo-project-beta"]
     }
   ]
 }

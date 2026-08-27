@@ -22,7 +22,9 @@ duplicating them.
 
 from __future__ import annotations
 
+import json
 import os
+from secrets import token_hex
 from typing import Any
 
 import pytest
@@ -34,7 +36,6 @@ from strawberry.relay import GlobalID
 
 from phoenix.config import ENV_PHOENIX_SQL_DATABASE_SCHEMA, ENV_PHOENIX_SQL_DATABASE_URL
 from phoenix.db.engines import get_async_db_url
-from phoenix.server.access.permissions import PROJECT_READ
 from tests.integration._helpers import (
     _ADMIN,
     _MEMBER,
@@ -52,13 +53,17 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-async def _grant_project_access(app: _AppInfo, *, user_id: int, project_id: int) -> None:
-    """Inserts a ``project_grants`` row directly against the running app's own
-    database. There is no GraphQL/REST mutation for this yet (only the OIDC
-    config-driven sync path creates grants) -- ``source='manual'`` is exactly
-    what the schema's own CHECK constraint anticipates for a non-config grant.
-    Standing up a live IdP to test a DB-level mechanism that does not care how
-    the grant was created would test OIDC sync, not RLS.
+async def _grant_project_access(app: _AppInfo, *, user_id: int, groups: list[str]) -> None:
+    """Sets ``users.idp_groups`` directly against the running app's own
+    database -- standing in for what a real OIDC login would populate,
+    without standing up a live IdP. The package-scoped app's
+    ``PHOENIX_ACCESS_CONTROL_GROUP_MAPPING_FILE`` (see
+    ``_env_access_control`` in conftest.py) maps these group names to the
+    ``mcp-sql-test-project-{a,b}-*`` project globs the ``_two_projects``
+    fixture below names its projects with, so project access is resolved
+    live from this list -- there is no ``project_grants`` row to insert
+    anymore. Wholesale replace, matching ``sync_idp_groups``'s own
+    semantics.
     """
     sql_database_url = app.env[ENV_PHOENIX_SQL_DATABASE_URL]
     schema = app.env.get(ENV_PHOENIX_SQL_DATABASE_SCHEMA)
@@ -68,14 +73,11 @@ async def _grant_project_access(app: _AppInfo, *, user_id: int, project_id: int)
             if schema:
                 # Each package-scoped app run gets its own randomized Postgres
                 # schema (see _helpers.py's _random_schema) -- without this,
-                # the insert would silently land in `public` instead.
+                # the update would silently target `public` instead.
                 await conn.execute(text(f"SET search_path TO {schema}"))
             await conn.execute(
-                text(
-                    "INSERT INTO project_grants (project_id, user_id, permission, source) "
-                    "VALUES (:project_id, :user_id, :permission, 'manual')"
-                ),
-                {"project_id": project_id, "user_id": user_id, "permission": PROJECT_READ},
+                text("UPDATE users SET idp_groups = CAST(:groups AS JSONB) WHERE id = :user_id"),
+                {"groups": json.dumps(groups), "user_id": user_id},
             )
     finally:
         await engine.dispose()
@@ -112,8 +114,16 @@ def _two_projects(_app: _AppInfo) -> tuple[int, int]:
     directly in an ``async def`` test raises "asyncio.run() cannot be called
     from a running event loop" (found by actually running this, not assumed).
     """
-    project_a = _insert_spans(_app, 1)[0].trace.project
-    project_b = _insert_spans(_app, 1)[0].trace.project
+    # Deterministic prefixes, not the default random hex name -- these must
+    # match the globs in `_env_access_control` (conftest.py) so
+    # `_grant_project_access` (which sets `idp_groups`, not a per-project
+    # grant row) can actually resolve to these specific projects.
+    project_a = _insert_spans(_app, 1, project_name=f"mcp-sql-test-project-a-{token_hex(8)}")[
+        0
+    ].trace.project
+    project_b = _insert_spans(_app, 1, project_name=f"mcp-sql-test-project-b-{token_hex(8)}")[
+        0
+    ].trace.project
     return int(project_a.id.node_id), int(project_b.id.node_id)
 
 
@@ -128,7 +138,7 @@ class TestMcpSqlProjectIsolation:
 
         member = _get_user(_app, _MEMBER)
         member_id = int(GlobalID.from_id(member.gid).node_id)
-        await _grant_project_access(_app, user_id=member_id, project_id=project_a_id)
+        await _grant_project_access(_app, user_id=member_id, groups=["mcp-sql-test-project-a"])
         token = await _mint_token_for_user(_app, member)
 
         envelope = await _call_execute_sql(_app, token, _PROBE_SQL)
@@ -171,8 +181,11 @@ class TestMcpSqlProjectIsolation:
 
         member = _get_user(_app, _MEMBER)
         member_id = int(GlobalID.from_id(member.gid).node_id)
-        await _grant_project_access(_app, user_id=member_id, project_id=project_a_id)
-        await _grant_project_access(_app, user_id=member_id, project_id=project_b_id)
+        await _grant_project_access(
+            _app,
+            user_id=member_id,
+            groups=["mcp-sql-test-project-a", "mcp-sql-test-project-b"],
+        )
         token = await _mint_token_for_user(_app, member)
 
         envelope = await _call_execute_sql(_app, token, _PROBE_SQL)
