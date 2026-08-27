@@ -444,6 +444,36 @@ def _env_agents() -> dict[str, str]:
 
 
 @pytest.fixture(scope="package")
+def _env_access_control(tmp_path_factory: pytest.TempPathFactory) -> Mapping[str, str]:
+    """Group->project mapping for
+    tests/integration/auth/test_mcp_sql_project_isolation.py.
+    Package-scoped since PHOENIX_ACCESS_CONTROL_GROUP_MAPPING_FILE is only
+    read once per server process -- these two entries are inert for every
+    other test in this package, since their users never hold these group
+    names."""
+    import yaml
+
+    mapping_file = tmp_path_factory.mktemp("access_control") / "group-mapping.yaml"
+    mapping_file.write_text(
+        yaml.dump(
+            [
+                {
+                    "idp_group": "mcp-sql-test-project-a",
+                    "projects": ["mcp-sql-test-project-a-*"],
+                    "role": "viewer",
+                },
+                {
+                    "idp_group": "mcp-sql-test-project-b",
+                    "projects": ["mcp-sql-test-project-b-*"],
+                    "role": "viewer",
+                },
+            ]
+        )
+    )
+    return {"PHOENIX_ACCESS_CONTROL_GROUP_MAPPING_FILE": str(mapping_file)}
+
+
+@pytest.fixture(scope="package")
 def _env(
     _env_auth: Mapping[str, str],
     _env_database: Mapping[str, str],
@@ -453,6 +483,7 @@ def _env(
     _env_smtp: Mapping[str, str],
     _env_tls: Mapping[str, str],
     _env_agents: Mapping[str, str],
+    _env_access_control: Mapping[str, str],
 ) -> dict[str, str]:
     """Combine all environment variable configurations for testing."""
     return {
@@ -464,6 +495,7 @@ def _env(
         **_env_oauth2,
         **_env_ldap,
         **_env_agents,
+        **_env_access_control,
         # The OAuth2 consent decision endpoint requires an Origin header that
         # matches the server's public origin. Tests reach the server at
         # 127.0.0.1, so that hostname must be trusted in addition to the

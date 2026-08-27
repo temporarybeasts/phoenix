@@ -1,15 +1,16 @@
 # PHOENIX_ACCESS_CONTROL_GROUP_MAPPING_FILE for the row-level-isolation
-# demo. Schema: src/phoenix/server/access/idp_sync.py's
+# demo. Schema: src/phoenix/server/access/resolution.py's
 # _GroupProjectMappingEntry / _load_group_mapping.
 #
-# Synced into project_grants at login time for whichever of these
-# idp_group entries the logging-in user currently belongs to (see
-# local-dev/keycloak/realm-export.json for group membership). `projects`
-# entries are glob patterns matched against project names.
+# Evaluated live, on every access check, against whichever of these
+# idp_group entries the requesting user currently belongs to (see
+# local-dev/keycloak/realm-export.json for group membership) and the
+# current `projects` table. `projects` entries are glob patterns matched
+# against project names.
 
 - idp_group: demo-project-alpha
   projects: ["demo-team-alpha"]
-  permission: "project:read"
+  role: "viewer"
 - idp_group: demo-project-beta
   projects: ["demo-team-beta"]
-  permission: "project:read"
+  role: "viewer"
