@@ -35,18 +35,20 @@ from typing import Any, AsyncIterator
 
 import httpx
 import pytest
+import yaml
 from asgi_lifespan import LifespanManager
 from fastapi import FastAPI
 from pydantic import SecretStr
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls, FunctionModel
 from pytest_postgresql.janitor import DatabaseJanitor
-from sqlalchemy import URL, select, text
+from sqlalchemy import URL, select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.types import ASGIApp
 
 from phoenix.db import models
 from phoenix.db.engines import aio_postgresql_engine
+from phoenix.server.access import resolution
 from phoenix.server.agents.model_selection import BuiltInProviderModelSelection
 from phoenix.server.app import create_app
 from phoenix.server.jwt_store import JwtStore
@@ -212,15 +214,28 @@ async def _seed_project_with_span(db: DbSessionFactory, *, name: str) -> tuple[i
         return project.id, otel_span_id
 
 
-async def _grant_project_read(db: DbSessionFactory, *, user_id: int, project_id: int) -> None:
+async def _grant_project_read(
+    db: DbSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    *,
+    user_id: int,
+    project_name: str,
+) -> None:
+    """Grants access the only way it's now possible: an IdP group mapped to
+    the project via the declarative config file, with the user directly
+    seeded as a member of that group -- standing in for what a real OIDC
+    login would populate on `users.idp_groups`."""
+    group_name = f"group-{token_hex(4)}"
+    mapping_file = tmp_path / f"mapping-{token_hex(4)}.yaml"
+    mapping_file.write_text(
+        yaml.dump([{"idp_group": group_name, "projects": [project_name], "role": "viewer"}])
+    )
+    monkeypatch.setenv("PHOENIX_ACCESS_CONTROL_GROUP_MAPPING_FILE", str(mapping_file))
+    resolution._mapping_cache = None
     async with db() as session:
-        session.add(
-            models.ProjectGrant(
-                project_id=project_id,
-                user_id=user_id,
-                permission="project:read",
-                source="manual",
-            )
+        await session.execute(
+            update(models.User).where(models.User.id == user_id).values(idp_groups=[group_name])
         )
 
 
@@ -303,15 +318,19 @@ class TestWriteSpanNoteDbIsolation:
         db: DbSessionFactory,
         httpx_client: httpx.AsyncClient,
         monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Any,
     ) -> None:
-        granted_project_id, _granted_span_id = await _seed_project_with_span(
-            db, name=f"granted-{token_hex(4)}"
+        granted_project_name = f"granted-{token_hex(4)}"
+        _granted_project_id, _granted_span_id = await _seed_project_with_span(
+            db, name=granted_project_name
         )
-        ungranted_project_id, ungranted_span_id = await _seed_project_with_span(
+        _ungranted_project_id, ungranted_span_id = await _seed_project_with_span(
             db, name=f"ungranted-{token_hex(4)}"
         )
         user_id, token = await _create_member_with_token(db)
-        await _grant_project_read(db, user_id=user_id, project_id=granted_project_id)
+        await _grant_project_read(
+            db, monkeypatch, tmp_path, user_id=user_id, project_name=granted_project_name
+        )
         agent_session_id = await _create_agent_session(db, user_id=user_id)
 
         async def _fake_build_model(*args: object, **kwargs: object) -> FunctionModel:
@@ -345,7 +364,7 @@ class TestWriteSpanNoteDbIsolation:
         assert annotation_count == 0, (
             "write_span_note wrote a note to a span in a project the member was never "
             "granted access to -- current_user_var did not correctly restrict the "
-            "underlying DB session to the member's actual project_grants."
+            "underlying DB session to the member's actual project access."
         )
 
 
@@ -355,15 +374,16 @@ class TestBashToolDbIsolation:
         db: DbSessionFactory,
         httpx_client: httpx.AsyncClient,
         monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Any,
     ) -> None:
         from strawberry.relay import GlobalID
 
         granted_project_name = f"granted-{token_hex(4)}"
         ungranted_project_name = f"ungranted-{token_hex(4)}"
-        granted_project_id, _granted_span_id = await _seed_project_with_span(
+        _granted_project_id, _granted_span_id = await _seed_project_with_span(
             db, name=granted_project_name
         )
-        ungranted_project_id, ungranted_span_id = await _seed_project_with_span(
+        _ungranted_project_id, ungranted_span_id = await _seed_project_with_span(
             db, name=ungranted_project_name
         )
         async with db() as session:
@@ -381,7 +401,9 @@ class TestBashToolDbIsolation:
         ungranted_span_name = f"span-in-{ungranted_project_name}"
 
         user_id, token = await _create_member_with_token(db)
-        await _grant_project_read(db, user_id=user_id, project_id=granted_project_id)
+        await _grant_project_read(
+            db, monkeypatch, tmp_path, user_id=user_id, project_name=granted_project_name
+        )
         agent_session_id = await _create_agent_session(db, user_id=user_id)
 
         # GraphQL string literals need double quotes; the whole query is then
