@@ -49,10 +49,7 @@ from phoenix.config import (
     get_env_disable_rate_limit,
 )
 from phoenix.db import models
-from phoenix.server.access.idp_sync import (
-    sync_config_driven_project_grants,
-    sync_idp_group_memberships,
-)
+from phoenix.server.access.idp_sync import sync_idp_groups
 from phoenix.server.api.auth_messages import AuthErrorCode
 from phoenix.server.bearer_auth import create_access_and_refresh_tokens
 from phoenix.server.oauth2 import DEFAULT_EMAIL_PATH, OAuth2Client, search_claim_path
@@ -263,14 +260,11 @@ async def create_tokens(
                 role_resync=oauth2_client.role_resync,
             )
             # Fork-only: sync the IdP groups already extracted above (as
-            # `role_name`'s source data) into the access-control tables,
-            # and reconcile any config-driven project grants they imply.
-            # Same replace-on-login semantics as the role resync just
-            # above -- see phoenix.server.access.idp_sync.
-            idp_group_ids_by_name = await sync_idp_group_memberships(
-                session, user.id, oauth2_client.extract_groups(user_info.claims)
-            )
-            await sync_config_driven_project_grants(session, idp_group_ids_by_name)
+            # `role_name`'s source data) onto the user -- project access is
+            # computed live from this list at resolution time. Same
+            # replace-on-login semantics as the role resync just above --
+            # see phoenix.server.access.idp_sync.
+            await sync_idp_groups(session, user.id, oauth2_client.extract_groups(user_info.claims))
     except EmailAlreadyInUse as e:
         logger.error("Email already in use for IDP %s: %s", idp_name, e)
         return _redirect_to_login(request=request, error="email_in_use")

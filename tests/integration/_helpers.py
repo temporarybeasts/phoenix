@@ -2070,10 +2070,12 @@ class _ExistingSpan(NamedTuple):
     trace: _ExistingTrace
 
 
-def _insert_spans(app: _AppInfo, n: int) -> tuple[_ExistingSpan, ...]:
+def _insert_spans(
+    app: _AppInfo, n: int, *, project_name: Optional[str] = None
+) -> tuple[_ExistingSpan, ...]:
     assert n > 0, "Number of spans to insert must be greater than 0"
     memory = InMemorySpanExporter()
-    project_name = token_hex(16)
+    project_name = project_name or token_hex(16)
     for _ in range(n):
         _start_span(
             project_name=project_name,

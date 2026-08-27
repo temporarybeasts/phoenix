@@ -1,12 +1,16 @@
 # Row-level isolation / project-grant manual test & demo
 
-Demos and manually verifies per-project row-level isolation (RLS): a
-`project_grants`/`idp_groups` model synced from OIDC group claims
-(`src/phoenix/server/access/idp_sync.py`), enforced in Postgres via a
-`phoenix_scoped` role + `USING`/`WITH CHECK` policies on 10 project-scoped
-tables (`src/phoenix/server/access/resolution.py`,
-`_set_db_isolation_guards` in `src/phoenix/server/app.py`), plus pre-write
-project-access checks in the GraphQL/REST annotation mutations.
+Demos and manually verifies per-project row-level isolation (RLS): project
+access is computed **live** from a user's raw OIDC `groups` claim
+(persisted on `users.idp_groups` at login, see
+`src/phoenix/server/access/idp_sync.py`) against the declarative
+group->project mapping config (`src/phoenix/server/access/resolution.py`),
+enforced in Postgres via a `phoenix_scoped` role + `USING`/`WITH CHECK`
+policies on 10 project-scoped tables (`_set_db_isolation_guards` in
+`src/phoenix/server/app.py`), plus pre-write project-access checks in the
+GraphQL/REST annotation mutations. Nothing is pre-materialized into its own
+grant table -- access is recomputed from the group list + config + current
+`projects` table on every check (cached ~30s).
 
 Reuses `local-dev/keycloak/`'s Keycloak instance and realm (see that
 directory's README for the base SSO test matrix) — this just adds
@@ -16,17 +20,6 @@ Unlike `local-dev/keycloak/`, this directory is tracked — it's kept
 around as a demo rig, not just scratch scaffolding. `phoenix.env` itself
 stays untracked (see `.gitignore`); only `phoenix.env.example` is
 checked in, same convention as `local-dev/keycloak/`.
-
-**Verified against a real Keycloak + Postgres + Phoenix stack
-(2026-08-27)**: every non-optional item in the test matrix below passed,
-plus the config-driven-grant-sync and direct-`psql` optional checks. One
-real bug was caught and fixed in the process: this directory's own
-`phoenix.env` (not `.example`) had a stale, pre-JMESPath-fix
-`ROLE_ATTRIBUTE_PATH`, which silently resolved both `bob-user` and
-`dave-user` to VIEWER instead of MEMBER — exactly the alphabetical-groups
-failure mode described in step 1's note below. `phoenix.env` is
-untracked precisely so this can't happen from a stale committed copy;
-if you see it, `rm` and re-`cp` from `.example`.
 
 ## 1. Start Keycloak and Postgres
 
@@ -44,8 +37,9 @@ The Keycloak realm now seeds four users (all password `password`):
 | `dave-user`      | `phoenix-users`, `demo-project-beta`    | MEMBER                 | `demo-team-beta` only |
 | `carol-outsider` | *(none)*                                | denied at login        | n/a              |
 
-Project access comes from `local-dev/rls-demo/group-mapping.yaml`, synced
-into `project_grants` at login time.
+Project access is computed live from `local-dev/rls-demo/group-mapping.yaml`
+against the requesting user's current `idp_groups` list and the current
+`projects` table -- nothing is written to a separate grant table at login.
 
 `bob-user`/`dave-user` each carry a second, unmapped group
 (`demo-project-alpha`/`demo-project-beta`) alongside `phoenix-users`.
@@ -66,9 +60,15 @@ live against this rig.
 
 ```sh
 make build-frontend    # first time only -- phoenix serve needs static assets on 6006
-cp local-dev/rls-demo/phoenix.env.example local-dev/rls-demo/phoenix.env   # first time only
+```
+```shell
+cp local-dev/rls-demo/phoenix.env.example local-dev/rls-demo/phoenix.env
+```
+```shell
 set -a && source local-dev/rls-demo/phoenix.env && set +a
-env | grep PHOENIX_SQL_DATABASE_URL   # must print the postgresql:// URL above
+env | grep PHOENIX_SQL_DATABASE_URL
+```
+```shell
 make dev-backend
 ```
 
@@ -90,13 +90,19 @@ once:
 curl -s -i -X POST http://localhost:6006/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@localhost","password":"admin"}'
+  ```
+``` shell
+token=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJqdGkiOiJBY2Nlc3NUb2tlbjo5In0.at8VyhPlKYVIco0c1SXNFWUoMWnvxQcSrDAso7sNjg8
 # copy the phoenix-access-token cookie value from the response, then:
 curl -s -X POST http://localhost:6006/v1/user/api_keys \
-  -H "Authorization: Bearer <access token>" \
+  -H "Authorization: Bearer ${token}" \
   -H "Content-Type: application/json" \
   -d '{"data":{"name":"rls-demo-seed-key"}}'
+  ```
+``` shell
+key=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJqdGkiOiJBcGlLZXk6MiJ9.jnufpAiwMYFwS2LJEnUikOScEeNeMCq8jzIo-hYd6-o
 # copy the "key" field from the response
-export PHOENIX_API_KEY=<key>
+export PHOENIX_API_KEY=${key}
 uv run local-dev/rls-demo/seed_projects.py
 ```
 
@@ -109,25 +115,25 @@ mutations below).
 
 ## 4. Test matrix
 
-- [x] **Admin sees everything**: log in as `alice-admin`. Project list
+- [ ] **Admin sees everything**: log in as `alice-admin`. Project list
       shows both `demo-team-alpha` and `demo-team-beta` (ADMIN sets
       `app.bypass_rls`, see `_set_db_isolation_guards`).
-- [x] **Member sees only their granted project**: log in as `bob-user`.
+- [ ] **Member sees only their granted project**: log in as `bob-user`.
       Project list shows only `demo-team-alpha`.
-- [x] **A different member sees only theirs**: log in as `dave-user`.
+- [ ] **A different member sees only theirs**: log in as `dave-user`.
       Project list shows only `demo-team-beta`.
-- [x] **In-project annotation succeeds**: as `bob-user`, open a span in
+- [ ] **In-project annotation succeeds**: as `bob-user`, open a span in
       `demo-team-alpha` and add a span annotation (UI, or GraphQL
       `createSpanAnnotations`, or `POST /v1/span_annotations?sync=true`).
       Succeeds.
-- [x] **Cross-project annotation is rejected**: as `bob-user`, get a span
+- [ ] **Cross-project annotation is rejected**: as `bob-user`, get a span
       id from `demo-team-beta` (e.g. from `alice-admin`'s session, or via
       Postgres) and attempt to annotate it. Rejected — GraphQL raises
       `NotFound` (RLS makes the row invisible to `bob-user`'s own
       existence-check `SELECT`, before any `WITH CHECK` is reached), REST
       `sync=true` returns 404. This is the behavior verified in commit
       `9f7f66374`.
-- [x] **(optional) Direct-DB verification** — via `psql
+- [ ] **(optional) Direct-DB verification** — via `psql
       postgresql://postgres:postgres@localhost:5432/postgres`. The
       `set_config(..., true)` third argument makes the setting
       transaction-local, so wrap each check in an explicit transaction or
@@ -151,39 +157,43 @@ mutations below).
       through the MCP SQL tool (`src/phoenix/server/mcp/sql/execute.py`).
       Expect only `demo-team-alpha` back — it has no project-scoping code
       of its own, it just rides the same RLS-guarded DB session as
-      everything else. Skipped in the 2026-08-27 manual pass since it
-      needs a real MCP client completing OAuth2 dynamic client
-      registration + the authorization-code flow scoped to `/mcp`
-      (RFC 8707) — already covered end-to-end by the automated
+      everything else. Already covered end-to-end by the automated
       `tests/integration/auth/test_mcp_sql_project_isolation.py`, which
       passes for member/admin/member-granted-both.
-- [x] **(optional) Config-driven grant sync is additive, and the mapping
-      file is only read once per process**: edit
-      `local-dev/rls-demo/group-mapping.yaml` to add `demo-team-beta` to
-      the `demo-project-alpha` entry's `projects` list. Signing
-      `bob-user` out and back in **has no effect** —
-      `_load_group_mapping` in `idp_sync.py` caches the parsed file at
-      module level for the process lifetime ("this is fork-only,
-      low-churn config, not something that needs live-reload"). Restart
-      `make dev-backend`, *then* sign bob back in: `demo-team-beta` now
-      appears in his project list. Revert the file back afterwards (it
-      ships with `demo-project-alpha` → `demo-team-alpha` only) and
-      restart again.
+- [ ] **(optional) Config changes take effect live, without a new login**:
+      edit `local-dev/rls-demo/group-mapping.yaml` to remove
+      `demo-team-alpha` from the `demo-project-alpha` entry's `projects`
+      list (or narrow the glob). Without signing `bob-user` out, refresh
+      the project list after ~30s (the resolution cache's TTL) —
+      `demo-team-alpha` disappears. Revert the file to restore access; it
+      reappears after the same TTL, still with no re-login required. This
+      demonstrates the fix for the old additive-only sync behavior. Note
+      the mapping *file* itself is still cached per-process
+      (`_load_group_mapping` in `resolution.py`) — an edit needs a `make
+      dev-backend` restart before any request will see it, only the
+      group-membership and project-existence sides of resolution are
+      live.
+- [ ] **(optional) A newly created project matching an already-held
+      group's glob appears without re-login**: as `bob-user` (mapped to
+      `demo-team-alpha` via an exact-match glob today), have an admin
+      create a new project whose name would match a broader glob you've
+      configured for `demo-project-alpha` (e.g. temporarily set
+      `projects: ["demo-team-*"]`) — the new project appears in `bob-user`'s
+      list after the cache TTL, with no re-login needed, since project
+      matching is recomputed against the *current* `projects` table on
+      every check.
 
 ## Notes
 
-- `sync_config_driven_project_grants` (`idp_sync.py`) is **additive-only**:
-  narrowing or removing a `group-mapping.yaml` entry does not revoke a
-  grant a user already picked up from it. Removing access requires a
-  direct `DELETE FROM project_grants ...`. The mapping file itself is
-  also **cached per-process** (`_load_group_mapping`), so editing it
-  needs a `make dev-backend` restart before any login will see the
-  change — see the optional config-sync test above.
+- Access is recomputed on every check from `users.idp_groups` (set at
+  login) against `group-mapping.yaml` and the current `projects` table —
+  there's no `project_grants` table to inspect or clean up. Revoking
+  access is just editing the YAML; no direct DB write needed.
 - There is currently **no admin UI or GraphQL mutation** to hand-grant a
-  project to a user — the only paths are the OIDC-group + mapping-file
-  route demoed here, or a direct `INSERT INTO project_grants (project_id,
-  user_id, permission, source) VALUES (..., 'manual')` for local/basic-auth
-  users who aren't going through an IdP at all.
+  project to a user — the only path is the OIDC-group + mapping-file
+  route demoed here. Manual (non-IdP) per-user grants were considered and
+  intentionally dropped: all project access flows through IdP group
+  claims.
 - Ingest (`/v1/traces`) still requires authentication like every other
   `/v1` route, but performs **no per-project write check** — any valid
   credential can write to any project. This is an accepted precedent

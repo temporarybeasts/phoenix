@@ -43,19 +43,6 @@ CREATE INDEX ix_generative_models_updated_at ON public.generative_models
     USING btree (updated_at);
 
 
--- Table: idp_groups
--- -----------------
-CREATE TABLE public.idp_groups (
-    id bigserial NOT NULL,
-    name VARCHAR NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-    CONSTRAINT pk_idp_groups PRIMARY KEY (id)
-);
-
-CREATE UNIQUE INDEX ix_idp_groups_name ON public.idp_groups
-    USING btree (name);
-
-
 -- Table: languages
 -- ----------------
 CREATE TABLE public.languages (
@@ -416,6 +403,7 @@ CREATE TABLE public.users (
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
     auth_method VARCHAR NOT NULL,
     ldap_unique_id VARCHAR,
+    idp_groups JSONB NOT NULL DEFAULT '[]'::jsonb,
     CONSTRAINT pk_users PRIMARY KEY (id),
     CONSTRAINT "ck_users_`ldap_auth_valid`" CHECK ((((auth_method)::text <> 'LDAP'::text) OR ((oauth2_client_id IS NULL) AND (oauth2_user_id IS NULL) AND ((email IS NOT NULL) OR (ldap_unique_id IS NOT NULL))))),
     CONSTRAINT "ck_users_`local_auth_has_password_no_oauth`" CHECK ((((auth_method)::text <> 'LOCAL'::text) OR ((password_hash IS NOT NULL) AND (password_salt IS NOT NULL) AND (oauth2_client_id IS NULL) AND (oauth2_user_id IS NULL) AND (ldap_unique_id IS NULL)))),
@@ -1317,50 +1305,6 @@ CREATE UNIQUE INDEX ix_password_reset_tokens_user_id ON public.password_reset_to
     USING btree (user_id);
 
 
--- Table: project_grants
--- ---------------------
-CREATE TABLE public.project_grants (
-    id bigserial NOT NULL,
-    project_id BIGINT NOT NULL,
-    user_id BIGINT,
-    idp_group_id BIGINT,
-    permission VARCHAR NOT NULL,
-    source VARCHAR NOT NULL,
-    granted_by BIGINT,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-    CONSTRAINT pk_project_grants PRIMARY KEY (id),
-    CONSTRAINT "ck_project_grants_`exactly_one_grant_subject`" CHECK (((user_id IS NOT NULL) <> (idp_group_id IS NOT NULL))),
-    CONSTRAINT "ck_project_grants_`valid_project_grant_source`"
-        CHECK (((source)::text = ANY ((ARRAY[
-            'config'::character varying,
-            'manual'::character varying
-        ])::text[]))),
-    CONSTRAINT fk_project_grants_granted_by_users
-        FOREIGN KEY (granted_by)
-        REFERENCES public.users (id)
-        ON DELETE SET NULL,
-    CONSTRAINT fk_project_grants_idp_group_id_idp_groups
-        FOREIGN KEY (idp_group_id)
-        REFERENCES public.idp_groups (id)
-        ON DELETE CASCADE,
-    CONSTRAINT fk_project_grants_project_id_projects
-        FOREIGN KEY (project_id)
-        REFERENCES public.projects (id)
-        ON DELETE CASCADE,
-    CONSTRAINT fk_project_grants_user_id_users
-        FOREIGN KEY (user_id)
-        REFERENCES public.users (id)
-        ON DELETE CASCADE
-);
-
-CREATE INDEX ix_project_grants_project_id ON public.project_grants
-    USING btree (project_id);
-CREATE UNIQUE INDEX uq_project_grants_idp_group ON public.project_grants
-    USING btree (project_id, idp_group_id, permission) WHERE (idp_group_id IS NOT NULL);
-CREATE UNIQUE INDEX uq_project_grants_user ON public.project_grants
-    USING btree (project_id, user_id, permission) WHERE (user_id IS NOT NULL);
-
-
 -- Table: project_session_annotations
 -- ----------------------------------
 CREATE TABLE public.project_session_annotations (
@@ -1866,23 +1810,3 @@ CREATE INDEX ix_trace_annotations_trace_rowid ON public.trace_annotations
     USING btree (trace_rowid);
 CREATE INDEX ix_trace_annotations_user_id ON public.trace_annotations
     USING btree (user_id);
-
-
--- Table: user_idp_group_memberships
--- ---------------------------------
-CREATE TABLE public.user_idp_group_memberships (
-    user_id BIGINT NOT NULL,
-    idp_group_id BIGINT NOT NULL,
-    CONSTRAINT pk_user_idp_group_memberships PRIMARY KEY (user_id, idp_group_id),
-    CONSTRAINT fk_user_idp_group_memberships_idp_group_id_idp_groups
-        FOREIGN KEY (idp_group_id)
-        REFERENCES public.idp_groups (id)
-        ON DELETE CASCADE,
-    CONSTRAINT fk_user_idp_group_memberships_user_id_users
-        FOREIGN KEY (user_id)
-        REFERENCES public.users (id)
-        ON DELETE CASCADE
-);
-
-CREATE INDEX ix_user_idp_group_memberships_idp_group_id ON public.user_idp_group_memberships
-    USING btree (idp_group_id);
