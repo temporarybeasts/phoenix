@@ -51,6 +51,11 @@ examples/agent_framework_comparison/utils/saved_traces/*.parquet
 .env
 .env.phoenix
 
+# local-dev env files are copied from a tracked .example template
+# (`cp local-dev/*/phoenix.env.example local-dev/*/phoenix.env`) -- they
+# carry dev secrets/local URLs, only the template is meant to be tracked.
+local-dev/*/phoenix.env
+
 # python environments
 .conda
 .venv
