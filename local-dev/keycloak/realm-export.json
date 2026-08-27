@@ -1,0 +1,65 @@
+{
+  "realm": "phoenix-dev",
+  "enabled": true,
+  "sslRequired": "none",
+  "groups": [
+    { "name": "phoenix-admins" },
+    { "name": "phoenix-users" }
+  ],
+  "clients": [
+    {
+      "clientId": "phoenix",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "phoenix-dev-secret",
+      "redirectUris": ["http://localhost:6006/oauth2/keycloak/tokens"],
+      "webOrigins": ["http://localhost:6006"],
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "false",
+            "userinfo.token.claim": "true",
+            "claim.name": "groups"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "alice-admin",
+      "enabled": true,
+      "email": "alice@example.com",
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "password", "temporary": false }],
+      "groups": ["/phoenix-admins"]
+    },
+    {
+      "username": "bob-user",
+      "enabled": true,
+      "email": "bob@example.com",
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "password", "temporary": false }],
+      "groups": ["/phoenix-users"]
+    },
+    {
+      "username": "carol-outsider",
+      "enabled": true,
+      "email": "carol@example.com",
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "password", "temporary": false }],
+      "groups": []
+    }
+  ]
+}
