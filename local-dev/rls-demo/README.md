@@ -272,6 +272,64 @@ check on this path (unlike the annotation mutations below).
       access are both scoped to the *active* group, not the union of
       held groups. Verified live.
 
+## 5. Fake chat app: register a new project and stream live traces
+
+`local-dev/rls-demo/chat-app/` is a small synthetic "chat app" runnable
+as a Docker container -- each instance is one fake app identity that
+streams synthetic OTLP traces (`chat_app.py`) into a Phoenix project on
+a loop, demonstrating both reusing an already-mapped demo project and
+onboarding a brand-new one live, without re-running `seed_projects.py`.
+
+1. Build the image once:
+   ```sh
+   docker build -t rls-demo-chat-app local-dev/rls-demo/chat-app
+   ```
+2. Mint a dedicated API key per chat-app identity, reusing the same
+   admin-login + `/v1/user/api_keys` flow from step 3 above (just give
+   each a distinct `name`, e.g. `"chat-app-alpha-bot"`) -- one key per
+   instance, so each shows up separately in the admin UI's API keys
+   list.
+3. Run an instance targeting an *existing*, already-mapped project:
+   ```sh
+   docker run --rm --name chat-app-alpha \
+     -e CHAT_APP_NAME=alpha-bot \
+     -e PHOENIX_PROJECT_NAME=demo-team-alpha \
+     -e PHOENIX_API_KEY=<key> \
+     rls-demo-chat-app
+   ```
+   Traces stream straight into `demo-team-alpha` -- log in as
+   `bob-user` and watch new spans keep appearing under Traces with no
+   extra step.
+4. Mint a second key and run a second instance under a brand-new
+   name/project:
+   ```sh
+   docker run --rm --name chat-app-gamma \
+     -e CHAT_APP_NAME=gamma-bot \
+     -e PHOENIX_PROJECT_NAME=demo-team-gamma \
+     -e PHOENIX_API_KEY=<key2> \
+     rls-demo-chat-app
+   ```
+   Log in as `alice-admin` and confirm `demo-team-gamma` appears
+   (global RLS bypass, default project group) while it's invisible to
+   every other demo user -- nothing has mapped it to a group yet.
+5. Register the new project into its own group, the same onboarding
+   step `seed_projects.py` performs at setup time for the two
+   pre-baked demo projects, now done live and ad hoc:
+   ```sh
+   uv run local-dev/rls-demo/register_project.py demo-team-gamma demo-group-gamma
+   ```
+6. Multiple instances just mean distinct `--name`/`CHAT_APP_NAME`/
+   `PHOENIX_API_KEY` values -- e.g. run two identities both pointed at
+   `PHOENIX_PROJECT_NAME=demo-team-alpha` and confirm both show up as
+   separate API keys in the admin UI while interleaving spans into the
+   same project.
+
+`chat-app/docker-compose.yml` is a convenience for `docker compose
+build`/running a single instance; multiple named instances are run
+directly against the built image with `docker run`, as above, since
+compose services aren't a natural fit for "spin up N of these with
+different names."
+
 ## Notes
 
 - Access is recomputed on every check from `users.idp_groups` (set at
@@ -297,7 +355,7 @@ check on this path (unlike the annotation mutations below).
   the note in step 1 above if you add more groups to a user and their
   role unexpectedly resets to VIEWER.
 
-## 5. Clean up
+## 6. Clean up
 
 Stop Phoenix first (`Ctrl-C` the `make dev-backend` process), then tear
 down both stacks and their state:
@@ -305,6 +363,14 @@ down both stacks and their state:
 ```sh
 docker compose -f local-dev/rls-demo/docker-compose.yml down -v
 docker compose -f local-dev/keycloak/docker-compose.yml down
+```
+
+If any chat-app containers from section 5 are still running, stop them
+and remove the built image too:
+
+```sh
+docker rm -f $(docker ps -aq --filter "name=chat-app-") 2>/dev/null
+docker rmi rls-demo-chat-app
 ```
 
 - The `-v` on the `rls-demo` stack is required — it drops the named
