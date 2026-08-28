@@ -155,6 +155,11 @@ check on this path (unlike the annotation mutations below).
 
 ## 4. Test matrix
 
+`rls_demo_tests.ipynb` in this directory is a scripted version of steps 1-4
+below (including the optional/not-run-manually checks) -- it drives Keycloak
+login for each demo user over HTTP instead of a browser, so it can run
+unattended. See its first cell for what it does and doesn't cover.
+
 - [x] **Admin sees everything**: log in as `alice-admin`. Project list
       shows both `demo-team-alpha` and `demo-team-beta` (ADMIN sets
       `app.bypass_rls`, see `_set_db_isolation_guards`). Verified live
