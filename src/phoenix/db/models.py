@@ -52,7 +52,7 @@ from sqlalchemy.sql.elements import Case
 from sqlalchemy.sql.functions import coalesce
 from typing_extensions import Self, TypeAlias
 
-from phoenix.config import get_env_database_schema
+from phoenix.config import DEFAULT_PROJECT_GROUP_NAME, get_env_database_schema
 from phoenix.datetime_utils import normalize_datetime
 from phoenix.db.types.annotation_configs import (
     AnnotationConfig as AnnotationConfigModel,
@@ -92,6 +92,7 @@ from phoenix.db.types.token_price_customization import (
     TokenPriceCustomizationParser,
 )
 from phoenix.db.types.trace_retention import TraceRetentionCronExpression, TraceRetentionRule
+from phoenix.server.access.permissions import ProjectGroupRole
 from phoenix.server.encryption import is_encrypted
 from phoenix.trace.attributes import get_attribute_value
 
@@ -737,10 +738,67 @@ class ProjectTraceRetentionPolicy(HasId):
     )
 
 
+class ProjectGroup(HasId):
+    """A named grouping of projects. Every project belongs to exactly one
+    group (see `Project.project_group_id`) -- there is no "ungrouped" state.
+    Access to a group is granted via `ExternalRoleProjectGroupMapping`,
+    populated by an onboarding process external to Phoenix (see
+    `phoenix.server.access.resolution`), not by naming convention."""
+
+    __tablename__ = "project_groups"
+    name: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    description: Mapped[Optional[str]]
+    created_at: Mapped[datetime] = mapped_column(UtcTimeStamp, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcTimeStamp, server_default=func.now(), onupdate=func.now()
+    )
+    projects: Mapped[list["Project"]] = relationship(
+        "Project", back_populates="project_group", uselist=True
+    )
+    external_role_mappings: Mapped[list["ExternalRoleProjectGroupMapping"]] = relationship(
+        "ExternalRoleProjectGroupMapping", back_populates="project_group", uselist=True
+    )
+
+
+class ExternalRoleProjectGroupMapping(HasId):
+    """Declarative config: which external role (a raw IdP `groups` claim
+    value, see `User.idp_groups`) grants access to which project group, at
+    which role tier. Persisted in the database and maintained by an
+    onboarding process external to Phoenix -- Phoenix reads this table but
+    exposes no mutation surface for editing it. One external role maps to
+    at most one project group; a group may be targeted by more than one
+    external role, e.g. at different role tiers."""
+
+    __tablename__ = "external_role_project_group_mappings"
+    external_role: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    project_group_id: Mapped[int] = mapped_column(
+        ForeignKey("project_groups.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    project_group: Mapped["ProjectGroup"] = relationship(
+        "ProjectGroup", back_populates="external_role_mappings"
+    )
+    role: Mapped[ProjectGroupRole] = mapped_column(
+        CheckConstraint("role IN ('VIEWER', 'MEMBER', 'ADMIN')", name="valid_project_group_role"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(UtcTimeStamp, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcTimeStamp, server_default=func.now(), onupdate=func.now()
+    )
+
+
 class Project(HasId):
     __tablename__ = "projects"
     name: Mapped[str]
     description: Mapped[Optional[str]]
+    project_group_id: Mapped[int] = mapped_column(
+        ForeignKey("project_groups.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    project_group: Mapped["ProjectGroup"] = relationship("ProjectGroup", back_populates="projects")
     gradient_start_color: Mapped[str] = mapped_column(
         String,
         server_default=text("'#5bdbff'"),
@@ -1272,10 +1330,21 @@ def _(element: Any, compiler: Any, **kw: Any) -> Any:
 async def init_models(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # This bootstrap path (used exclusively for ephemeral in-memory
+        # SQLite engines) runs during engine construction, before the app
+        # even exists -- well before `Facilitator._ensure_default_project_group`
+        # (which normally seeds this for any other `create_all`-based
+        # database) ever gets a chance to run. `projects.project_group_id`
+        # is NOT NULL, so the "default" project below needs its own group
+        # seeded here directly.
+        default_group_id = await conn.scalar(
+            insert(ProjectGroup).values(name=DEFAULT_PROJECT_GROUP_NAME).returning(ProjectGroup.id)
+        )
         await conn.execute(
             insert(Project).values(
                 name="default",
                 description="default project",
+                project_group_id=default_group_id,
             )
         )
 

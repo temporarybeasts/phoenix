@@ -91,7 +91,10 @@ from phoenix.db.facilitator import Facilitator
 from phoenix.db.helpers import SupportedSQLDialect
 from phoenix.db.insertion.types import AnnotationPrecursor
 from phoenix.server.access.context import CurrentUserMiddleware, current_user_var
-from phoenix.server.access.resolution import get_readable_project_ids
+from phoenix.server.access.resolution import (
+    get_readable_project_ids,
+    get_writable_project_group_ids,
+)
 from phoenix.server.agents.capabilities import MintlifyDocsMCPServer
 from phoenix.server.api.auth_messages import AUTH_ERROR_MESSAGES, AuthErrorCode
 from phoenix.server.api.context import Context, build_context
@@ -286,6 +289,16 @@ class AppConfig(NamedTuple):
     """ Whether the MCP server presents the code-mode tool surface """
     dev_vite_port: int = 5173
     """ Port the Vite dev server runs on. Only used in development mode. """
+    project_group_rbac_enabled: bool = False
+    """ Whether any configured OAuth2 client captures an IdP groups claim --
+    a frontend-only UI signal approximating whether project-group RBAC is
+    in use, so the "New Project" button can be hidden for viewers/unmapped
+    users. The actual authorization source of truth is DB-derived (see
+    ``resolution._project_group_rbac_in_use``, based on whether
+    ``external_role_project_group_mappings`` has any rows) and always wins
+    -- this flag can only ever under-show the button relative to what the
+    backend would actually allow (e.g. groups configured but the mapping
+    table not yet populated), never over-show it. """
 
 
 class Static(StaticFiles):
@@ -360,6 +373,7 @@ class Static(StaticFiles):
                     "mcp_server_enabled": self._app_config.mcp_server_enabled,
                     "mcp_code_mode_enabled": self._app_config.mcp_code_mode_enabled,
                     "auth_error_messages": self._app_config.auth_error_messages,
+                    "project_group_rbac_enabled": self._app_config.project_group_rbac_enabled,
                 },
             )
         except Exception as e:
@@ -518,10 +532,23 @@ async def _set_db_isolation_guards(session: AsyncSession) -> None:
         await session.execute(text("SELECT set_config('app.bypass_rls', 'true', true)"))
         return
     readable_project_ids = await get_readable_project_ids(session, user)
-    assert readable_project_ids is not None  # admin/system already handled above
+    if readable_project_ids is None:
+        # Project-group RBAC isn't in use in this deployment at all (no
+        # external-role mapping rows exist -- see
+        # `resolution._project_group_rbac_in_use`) -- full access for every
+        # authenticated user, matching pre-project-group-RBAC behavior,
+        # same as the admin/system branch above.
+        await session.execute(text("SELECT set_config('app.bypass_rls', 'true', true)"))
+        return
     ids_csv = ",".join(str(i) for i in sorted(readable_project_ids))
     await session.execute(
         text("SELECT set_config('app.readable_project_ids', :ids, true)"), {"ids": ids_csv}
+    )
+    writable_project_group_ids = await get_writable_project_group_ids(session, user)
+    group_ids_csv = ",".join(str(i) for i in sorted(writable_project_group_ids))
+    await session.execute(
+        text("SELECT set_config('app.writable_project_group_ids', :ids, true)"),
+        {"ids": group_ids_csv},
     )
     # SET ROLE's argument is an identifier, not a value -- it can't go
     # through set_config/bind params. Safe to interpolate here only
@@ -1371,6 +1398,9 @@ def create_app(
                     mcp_code_mode_enabled=mcp_mount_path is not None and get_env_mcp_code_mode(),
                     auth_error_messages=dict(AUTH_ERROR_MESSAGES) if authentication_enabled else {},
                     dev_vite_port=dev_vite_port,
+                    project_group_rbac_enabled=any(
+                        config.groups_attribute_path for config in oauth2_client_configs or []
+                    ),
                 ),
             ),
             name="static",

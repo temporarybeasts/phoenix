@@ -1,5 +1,5 @@
 /**
- * @generated SignedSource<<4fe0a85ac71e5aa374beac2b956d4e24>>
+ * @generated SignedSource<<0b7e4e648509c425e1dcdfd70942f0d5>>
  * @lightSyntaxTransform
  */
 
@@ -12,11 +12,21 @@ export type AuthMethod = "LDAP" | "LOCAL" | "OAUTH2";
 import { FragmentRefs } from "relay-runtime";
 export type ViewerContext_viewer$data = {
   readonly viewer: {
+    readonly activeProjectGroup: {
+      readonly id: string;
+      readonly name: string;
+      readonly role: string | null;
+    } | null;
     readonly authMethod: AuthMethod;
     readonly email: string | null;
     readonly id: string;
     readonly isManagementUser: boolean;
     readonly profilePictureUrl: string | null;
+    readonly projectGroups: ReadonlyArray<{
+      readonly id: string;
+      readonly name: string;
+      readonly role: string | null;
+    }>;
     readonly role: {
       readonly name: string;
     };
@@ -32,7 +42,33 @@ export type ViewerContext_viewer$key = {
 
 import ViewerContextRefetchQuery_graphql from './ViewerContextRefetchQuery.graphql';
 
-const node: ReaderFragment = {
+const node: ReaderFragment = (function(){
+var v0 = {
+  "alias": null,
+  "args": null,
+  "kind": "ScalarField",
+  "name": "id",
+  "storageKey": null
+},
+v1 = {
+  "alias": null,
+  "args": null,
+  "kind": "ScalarField",
+  "name": "name",
+  "storageKey": null
+},
+v2 = [
+  (v0/*:: as any*/),
+  (v1/*:: as any*/),
+  {
+    "alias": null,
+    "args": null,
+    "kind": "ScalarField",
+    "name": "role",
+    "storageKey": null
+  }
+];
+return {
   "argumentDefinitions": [],
   "kind": "Fragment",
   "metadata": {
@@ -52,13 +88,7 @@ const node: ReaderFragment = {
       "name": "viewer",
       "plural": false,
       "selections": [
-        {
-          "alias": null,
-          "args": null,
-          "kind": "ScalarField",
-          "name": "id",
-          "storageKey": null
-        },
+        (v0/*:: as any*/),
         {
           "alias": null,
           "args": null,
@@ -95,13 +125,7 @@ const node: ReaderFragment = {
           "name": "role",
           "plural": false,
           "selections": [
-            {
-              "alias": null,
-              "args": null,
-              "kind": "ScalarField",
-              "name": "name",
-              "storageKey": null
-            }
+            (v1/*:: as any*/)
           ],
           "storageKey": null
         },
@@ -110,6 +134,26 @@ const node: ReaderFragment = {
           "args": null,
           "kind": "ScalarField",
           "name": "authMethod",
+          "storageKey": null
+        },
+        {
+          "alias": null,
+          "args": null,
+          "concreteType": "ProjectGroup",
+          "kind": "LinkedField",
+          "name": "activeProjectGroup",
+          "plural": false,
+          "selections": (v2/*:: as any*/),
+          "storageKey": null
+        },
+        {
+          "alias": null,
+          "args": null,
+          "concreteType": "ProjectGroup",
+          "kind": "LinkedField",
+          "name": "projectGroups",
+          "plural": true,
+          "selections": (v2/*:: as any*/),
           "storageKey": null
         },
         {
@@ -129,7 +173,8 @@ const node: ReaderFragment = {
   "type": "Query",
   "abstractKey": null
 };
+})();
 
-(node as any).hash = "53341d080ff76da24b2f1bc9e36c4e23";
+(node as any).hash = "8bbcfdd793d55cc29cf0d947ee68fa15";
 
 export default node;

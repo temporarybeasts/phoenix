@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlencode, urlparse, urlunparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import SecretStr
 from sqlalchemy import func, select
 from sqlalchemy.orm import joinedload
@@ -35,6 +36,10 @@ from phoenix.config import (
     get_env_disable_rate_limit,
 )
 from phoenix.db import models
+from phoenix.server.access.active_group import (
+    apply_login_active_project_group_cookie,
+    requires_group_selection,
+)
 from phoenix.server.api.routers.ldap import get_or_create_ldap_user
 from phoenix.server.bearer_auth import PhoenixUser, create_access_and_refresh_tokens
 from phoenix.server.email.types import EmailSender
@@ -183,7 +188,7 @@ async def _login(request: Request) -> Response:
         raise HTTPException(status_code=401, detail=LOGIN_FAILED_MESSAGE)
 
     _record_brute_force_success(email)
-    return await _create_auth_response(request, user)
+    return await _create_auth_response(request, user, apply_active_project_group=True)
 
 
 async def _logout(request: Request) -> Response:
@@ -367,12 +372,28 @@ async def _ldap_login(request: Request) -> Response:
         user = await get_or_create_ldap_user(session, user_info, authenticator.config)
 
     _record_brute_force_success(lockout_key)
-    return await _create_auth_response(request, user)
+    return await _create_auth_response(request, user, apply_active_project_group=True)
 
 
-async def _create_auth_response(request: Request, user: models.User) -> Response:
+async def _create_auth_response(
+    request: Request, user: models.User, *, apply_active_project_group: bool = False
+) -> Response:
     """
     Creates access and refresh tokens for the user and sets them as cookies in the response.
+
+    ``apply_active_project_group`` must only be set for a genuine fresh
+    login (local, LDAP) -- ``_refresh_tokens`` also calls this helper on
+    every silent token refresh, which must never reset or re-prompt the
+    already-chosen active project group (see
+    ``phoenix.server.access.active_group``).
+
+    A multi-group user must pick which group they're viewing before
+    entering the app -- signaled by a ``{"requiresGroupSelection": true}``
+    JSON body (status 200) instead of the usual empty 204, since a 204
+    response can't carry a body. The frontend must show the picker rather
+    than following its normal post-login navigation in that case. Single-
+    and zero-group logins are unaffected (still a bare 204, unchanged from
+    before this existed).
     """
     token_store: TokenStore = request.app.state.get_token_store()
     assert isinstance(access_token_expiry := request.app.state.access_token_expiry, timedelta)
@@ -384,7 +405,20 @@ async def _create_auth_response(request: Request, user: models.User) -> Response
         access_token_expiry=access_token_expiry,
         refresh_token_expiry=refresh_token_expiry,
     )
-    response = Response(status_code=204)
+
+    response: Response
+    if apply_active_project_group:
+        async with request.app.state.db() as session:
+            if await requires_group_selection(session, user.id):
+                response = JSONResponse({"requiresGroupSelection": True})
+            else:
+                response = Response(status_code=204)
+                response = await apply_login_active_project_group_cookie(
+                    session=session, response=response, user_id=user.id
+                )
+    else:
+        response = Response(status_code=204)
+
     response = set_access_token_cookie(
         response=response, access_token=access_token, max_age=access_token_expiry
     )

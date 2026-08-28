@@ -158,6 +158,33 @@ def set_oauth2_code_verifier_cookie(
     )
 
 
+def set_active_project_group_cookie(
+    *, response: ResponseType, project_group_id: int
+) -> ResponseType:
+    """A true browser-session cookie (no `max_age`/`Expires`) -- cleared on
+    browser close and re-chosen fresh on every login, unlike the sticky
+    access/refresh token cookies above. Its value is never trusted as a
+    credential on its own: every read re-validates it against the caller's
+    live project-group memberships (see
+    `phoenix.server.access.resolution`), so a stale or tampered value only
+    ever degrades to "no active group", never to elevated access -- it
+    doesn't need to be part of the signed access/refresh tokens."""
+    response.set_cookie(
+        key=PHOENIX_ACTIVE_PROJECT_GROUP_COOKIE_NAME,
+        value=str(project_group_id),
+        secure=get_env_phoenix_use_secure_cookies(),
+        httponly=True,
+        samesite="strict",
+        path=get_env_cookies_path(),
+    )
+    return response
+
+
+def delete_active_project_group_cookie(response: ResponseType) -> ResponseType:
+    response.delete_cookie(key=PHOENIX_ACTIVE_PROJECT_GROUP_COOKIE_NAME)
+    return response
+
+
 def _set_cookie(
     *,
     response: ResponseType,
@@ -315,6 +342,7 @@ PHOENIX_OAUTH2_STATE_COOKIE_NAME = "phoenix-oauth2-state"
 PHOENIX_OAUTH2_NONCE_COOKIE_NAME = "phoenix-oauth2-nonce"
 """The name of the cookie that stores the nonce used for the OAuth2 authorization code flow."""
 PHOENIX_OAUTH2_CODE_VERIFIER_COOKIE_NAME = "phoenix-oauth2-code-verifier"
+PHOENIX_ACTIVE_PROJECT_GROUP_COOKIE_NAME = "phoenix-active-project-group"
 """The name of the cookie that stores the PKCE code verifier for OAuth2."""
 DEFAULT_OAUTH2_LOGIN_EXPIRY_MINUTES = 15
 """

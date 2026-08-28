@@ -3649,6 +3649,12 @@ def get_env_mask_internal_server_errors() -> bool:
 
 
 DEFAULT_PROJECT_NAME = "default"
+# The well-known project group every pre-existing/auto-created project lands
+# in -- created by migration acd16dbc13d0_project_groups.py. Used as the
+# landing group for OTLP-ingest-auto-created projects (which have no
+# authenticated "active group" context to draw from) and for local-dev/test
+# seeding; never assumed to exist by application code without a lookup.
+DEFAULT_PROJECT_GROUP_NAME = "default"
 _KUBERNETES_PHOENIX_PORT_PATTERN = re.compile(r"^tcp://\d{1,3}[.]\d{1,3}[.]\d{1,3}[.]\d{1,3}:\d+$")
 
 

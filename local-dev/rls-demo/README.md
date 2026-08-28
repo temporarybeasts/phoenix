@@ -1,20 +1,35 @@
-# Row-level isolation / project-grant manual test & demo
+# Row-level isolation / project-group manual test & demo
 
-Demos and manually verifies per-project row-level isolation (RLS): project
-access is computed **live** from a user's raw OIDC `groups` claim
-(persisted on `users.idp_groups` at login, see
-`src/phoenix/server/access/idp_sync.py`) against the declarative
-group->project mapping config (`src/phoenix/server/access/resolution.py`),
-enforced in Postgres via a `phoenix_scoped` role + `USING`/`WITH CHECK`
-policies on 10 project-scoped tables (`_set_db_isolation_guards` in
-`src/phoenix/server/app.py`), plus pre-write project-access checks in the
-GraphQL/REST annotation mutations. Nothing is pre-materialized into its own
-grant table -- access is recomputed from the group list + config + current
+Demos and manually verifies per-project-group row-level isolation (RLS):
+projects are organized into project groups (`project_groups` table, every
+project belongs to exactly one), and access to a group is granted via a raw
+OIDC `groups` claim value (an "external role", persisted on
+`users.idp_groups` at login, see
+`src/phoenix/server/access/idp_sync.py`) mapped to a `(project group, role)`
+pair in the `external_role_project_group_mappings` table -- a config table
+persisted in the database (not naming convention), maintained by an
+onboarding process external to Phoenix (this demo's stand-in: this
+directory's `seed_projects.py`). Enforced in Postgres via a
+`phoenix_scoped` role + `USING`/`WITH CHECK` policies on 10 project-scoped
+tables (`_set_db_isolation_guards` in `src/phoenix/server/app.py`), plus
+pre-write project-access checks in the GraphQL/REST annotation mutations.
+Nothing is pre-materialized into a per-project grant table -- access is
+recomputed from the held external roles + mapping table + current
 `projects` table on every check (cached ~30s).
+
+A user who belongs to more than one project group must pick which one
+they're "viewing" (at login, or by switching in the UI) -- see
+`phoenix.server.access.resolution` and `phoenix.server.access.active_group`.
+`bob-user`, `dave-user`, and `grace-groupadmin` each hold exactly one
+group, so this is their implicit active group with no picker involved;
+`faye-member` and `henry-groupadmin` each hold two (at VIEWER and ADMIN
+respectively) and exercise the login picker and in-UI switcher -- see the
+test matrix below.
 
 Reuses `local-dev/keycloak/`'s Keycloak instance and realm (see that
 directory's README for the base SSO test matrix) — this just adds
-Postgres and a second demo user so isolation is actually observable.
+Postgres and enough demo users to make isolation, and its interaction
+with multi-group membership, actually observable.
 
 Unlike `local-dev/keycloak/`, this directory is tracked — it's kept
 around as a demo rig, not just scratch scaffolding. `phoenix.env` itself
@@ -28,18 +43,38 @@ docker compose -f local-dev/keycloak/docker-compose.yml up -d
 docker compose -f local-dev/rls-demo/docker-compose.yml up -d
 ```
 
-The Keycloak realm now seeds four users (all password `password`):
+The Keycloak realm now seeds eight users (all password `password`):
 
-| user             | groups                                | expected Phoenix role | project access  |
-|------------------|-----------------------------------------|------------------------|------------------|
-| `alice-admin`    | `phoenix-admins`                        | ADMIN                  | all (bypasses RLS) |
-| `bob-user`       | `phoenix-users`, `demo-project-alpha`   | MEMBER                 | `demo-team-alpha` only |
-| `dave-user`      | `phoenix-users`, `demo-project-beta`    | MEMBER                 | `demo-team-beta` only |
-| `carol-outsider` | *(none)*                                | denied at login        | n/a              |
+| user                | groups                                                              | expected Phoenix role | project access  |
+|---------------------|----------------------------------------------------------------------|------------------------|------------------|
+| `alice-admin`       | `phoenix-admins`                                                      | ADMIN                  | all (global account-role ADMIN bypasses RLS entirely -- `app.bypass_rls`, see `_set_db_isolation_guards`). This is a distinct mechanism from project-group membership: she holds *zero* project groups, and would see nothing without the bypass. Contrast with `grace-groupadmin` below. |
+| `bob-user`          | `phoenix-users`, `demo-project-alpha`                                 | MEMBER                 | `demo-team-alpha` only (implicit active group), VIEWER-level project-group role (can annotate, cannot create a project -- see `seed_projects.py`) |
+| `dave-user`         | `phoenix-users`, `demo-project-beta`                                  | MEMBER                 | `demo-team-beta` only (implicit active group), same VIEWER-level project-group role as `bob-user` |
+| `carol-outsider`    | *(none)*                                                              | n/a                     | **denied at login** -- this is `local-dev/keycloak`'s own pre-existing account-level `ALLOWED_GROUPS` gate (see that directory's README), which runs *before* project-group resolution is ever reached. A truly zero-Keycloak-group user can never pass this gate while `GROUPS_ATTRIBUTE_PATH`/`ALLOWED_GROUPS` are both configured (`OAuth2Client.__init__` requires both together, and the membership check is an `any()` over the user's groups, which is vacuously false for an empty list) -- it is not possible to reuse `carol-outsider` to demonstrate the zero-*project-group* scenario below. |
+| `erin-nogroup`      | `phoenix-users`                                                       | MEMBER                  | none -- logs in fine (passes the account-level gate via `phoenix-users`), sees no projects, cannot create one (holds no external role mapped to any project group). This is the actual "zero-group user" scenario from the design decision: login always succeeds, only project-group *visibility* is empty. |
+| `faye-member`       | `phoenix-users`, `demo-project-alpha`, `demo-project-beta`            | MEMBER                  | **two groups**, VIEWER on each -- login shows the group-selection interstitial (`/login/choose-group`); sees only the active group's project, switches via the in-UI group switcher, cannot create in either (VIEWER). |
+| `grace-groupadmin`  | `phoenix-users`, `demo-project-alpha-admin`                            | MEMBER                  | `demo-team-alpha` only, ADMIN-tier *project-group* role -- one group, implicit active group, no picker. Unlike `alice-admin`, this is an ordinary account (global role MEMBER, no RLS bypass) whose elevated tier is scoped entirely to her one group: can create projects there, sees nothing outside it. This is the "existing admin, one group" case as a project-group-scoped role rather than the global bypass. |
+| `henry-groupadmin`  | `phoenix-users`, `demo-project-alpha-admin`, `demo-project-beta-admin` | MEMBER                  | **two groups**, ADMIN on each -- picker at login, sees only the active group's project, can create in whichever group is active, and a project created while viewing one group is invisible after switching to the other. |
 
-Project access is computed live from `local-dev/rls-demo/group-mapping.yaml`
-against the requesting user's current `idp_groups` list and the current
-`projects` table -- nothing is written to a separate grant table at login.
+`demo-project-alpha-admin`/`demo-project-beta-admin` are separate external
+roles from `demo-project-alpha`/`demo-project-beta` -- an external role
+maps to exactly one `(group, role)` pair, so granting ADMIN on the same
+group `bob-user`/`dave-user` hold at VIEWER requires its own role name,
+not a different tier of the same one.
+
+`erin-nogroup`, `faye-member`, `grace-groupadmin`, and `henry-groupadmin`
+aren't in `local-dev/keycloak/realm-export.json`'s *import* (Keycloak only
+imports a realm once; a container recreate is needed to pick up
+realm-export.json edits) -- if you're standing this rig up fresh and the
+import runs, they'll be there already; otherwise create them once via the
+admin console/API, matching the groups columns above (the two
+`*-admin` groups need creating too, alongside the existing four).
+
+Project access is computed live from the `external_role_project_group_mappings`
+table against the requesting user's current `idp_groups` list and the
+current `projects` table -- nothing is written to a per-project grant
+table at login. `seed_projects.py` (step 3 below) is what actually inserts
+these mapping rows; log in and check the project list *after* running it.
 
 `bob-user`/`dave-user` each carry a second, unmapped group
 (`demo-project-alpha`/`demo-project-beta`) alongside `phoenix-users`.
@@ -106,33 +141,63 @@ export PHOENIX_API_KEY=${key}
 uv run local-dev/rls-demo/seed_projects.py
 ```
 
-Creates `demo-team-alpha` and `demo-team-beta`, each with a couple of
-sample LLM spans. "Ingest bypasses RLS" doesn't mean ingest is
-unauthenticated -- it means any authenticated caller can write to *any*
-project via ingest regardless of their own project grants, since there's
-no per-project write check on this path (unlike the annotation
-mutations below).
+Creates `demo-team-alpha` and `demo-team-beta` (each with a couple of
+sample LLM spans, landing in the default project group via OTLP
+auto-creation), then reassigns each to its own dedicated project group and
+inserts every mapping row in `seed_projects.py`'s `ROLE_GRANTS`: VIEWER on
+`demo-project-alpha`/`demo-project-beta` (`bob-user`/`dave-user`/
+`faye-member`), and ADMIN on `demo-project-alpha-admin`/
+`demo-project-beta-admin` (`grace-groupadmin`/`henry-groupadmin`).
+"Ingest bypasses RLS" doesn't mean ingest is unauthenticated -- it means
+any authenticated caller can write to *any* project via ingest regardless
+of their own project-group access, since there's no per-project write
+check on this path (unlike the annotation mutations below).
 
 ## 4. Test matrix
 
-- [ ] **Admin sees everything**: log in as `alice-admin`. Project list
+- [x] **Admin sees everything**: log in as `alice-admin`. Project list
       shows both `demo-team-alpha` and `demo-team-beta` (ADMIN sets
-      `app.bypass_rls`, see `_set_db_isolation_guards`).
-- [ ] **Member sees only their granted project**: log in as `bob-user`.
-      Project list shows only `demo-team-alpha`.
-- [ ] **A different member sees only theirs**: log in as `dave-user`.
-      Project list shows only `demo-team-beta`.
-- [ ] **In-project annotation succeeds**: as `bob-user`, open a span in
+      `app.bypass_rls`, see `_set_db_isolation_guards`). Verified live
+      (also shows the `default` project, which has no traces).
+- [x] **Member sees only their granted project**: log in as `bob-user`.
+      Project list shows only `demo-team-alpha`. Verified live.
+- [x] **A different member sees only theirs**: log in as `dave-user`.
+      Project list shows only `demo-team-beta`. Verified live.
+- [x] **In-project annotation succeeds**: as `bob-user`, open a span in
       `demo-team-alpha` and add a span annotation (UI, or GraphQL
       `createSpanAnnotations`, or `POST /v1/span_annotations?sync=true`).
-      Succeeds.
-- [ ] **Cross-project annotation is rejected**: as `bob-user`, get a span
+      Succeeds. Verified live via `createSpanAnnotations` — note this
+      only requires the caller's VIEWER-level project-group role (see the
+      user table above); it is not gated the same way project *creation*
+      is.
+- [x] **Cross-project annotation is rejected**: as `bob-user`, get a span
       id from `demo-team-beta` (e.g. from `alice-admin`'s session, or via
       Postgres) and attempt to annotate it. Rejected — GraphQL raises
       `NotFound` (RLS makes the row invisible to `bob-user`'s own
       existence-check `SELECT`, before any `WITH CHECK` is reached), REST
       `sync=true` returns 404. This is the behavior verified in commit
-      `9f7f66374`.
+      `9f7f66374`. Verified live: `Could not find spans with IDs: [...]`.
+- [x] **Zero-project-group user logs in fine, sees nothing, can't
+      create**: log in as `erin-nogroup` (see the user table above for
+      why `carol-outsider` can't actually be used for this despite the
+      name). Login succeeds, project list is empty, and the "New
+      Project" button itself is absent from the toolbar (the button is
+      gated on `activeProjectGroup.role` being `MEMBER`/`ADMIN` via
+      `useCanCreateProject`, `js/app/src/contexts/ViewerContext.tsx` —
+      this was previously missing and has been fixed). Attempting
+      `createProject` directly over GraphQL is separately rejected
+      server-side regardless of the UI: `"You must be viewing a project
+      group with write access to create a project -- select or switch to
+      one first."` Both verified live.
+- [x] **A project created while viewing a group lands in that group**:
+      promote `bob-user`'s role on `demo-group-alpha` to `MEMBER`
+      (`UPDATE external_role_project_group_mappings SET role='MEMBER'
+      WHERE external_role='demo-project-alpha';`, wait out the cache
+      TTL), confirm the "New Project" button now appears, then create
+      one. The new row's `project_group_id` matches `demo-group-alpha`.
+      Verified live (`createProject` → `SELECT project_group_id FROM
+      projects` confirms). Revert the role back to `VIEWER` afterward to
+      match the documented user table.
 - [ ] **(optional) Direct-DB verification** — via `psql
       postgresql://postgres:postgres@localhost:5432/postgres`. The
       `set_config(..., true)` third argument makes the setting
@@ -160,38 +225,66 @@ mutations below).
       everything else. Already covered end-to-end by the automated
       `tests/integration/auth/test_mcp_sql_project_isolation.py`, which
       passes for member/admin/member-granted-both.
-- [ ] **(optional) Config changes take effect live, without a new login**:
-      edit `local-dev/rls-demo/group-mapping.yaml` to remove
-      `demo-team-alpha` from the `demo-project-alpha` entry's `projects`
-      list (or narrow the glob). Without signing `bob-user` out, refresh
-      the project list after ~30s (the resolution cache's TTL) —
-      `demo-team-alpha` disappears. Revert the file to restore access; it
-      reappears after the same TTL, still with no re-login required. This
-      demonstrates the fix for the old additive-only sync behavior. Note
-      the mapping *file* itself is still cached per-process
-      (`_load_group_mapping` in `resolution.py`) — an edit needs a `make
-      dev-backend` restart before any request will see it, only the
-      group-membership and project-existence sides of resolution are
-      live.
-- [ ] **(optional) A newly created project matching an already-held
-      group's glob appears without re-login**: as `bob-user` (mapped to
-      `demo-team-alpha` via an exact-match glob today), have an admin
-      create a new project whose name would match a broader glob you've
-      configured for `demo-project-alpha` (e.g. temporarily set
-      `projects: ["demo-team-*"]`) — the new project appears in `bob-user`'s
-      list after the cache TTL, with no re-login needed, since project
-      matching is recomputed against the *current* `projects` table on
+- [ ] **(optional) Mapping changes take effect live, without a new login**:
+      delete `bob-user`'s mapping row (`DELETE FROM
+      external_role_project_group_mappings WHERE external_role =
+      'demo-project-alpha';` via `psql`). Without signing `bob-user` out,
+      refresh the project list after ~30s (the resolution cache's TTL) —
+      `demo-team-alpha` disappears. Re-run `seed_projects.py` (or
+      re-insert the row) to restore access; it reappears after the same
+      TTL, still with no re-login required. This demonstrates the fix for
+      the old additive-only sync behavior, now via a direct DB edit
+      instead of a YAML edit.
+- [ ] **(optional) A newly created project in an already-held group
+      appears without re-login**: as `bob-user` (mapped to
+      `demo-group-alpha`), have an admin create a new project and assign
+      it to `demo-group-alpha`'s id (`UPDATE projects SET
+      project_group_id = <demo-group-alpha id> WHERE name =
+      '<new-project-name>';`) — the new project appears in `bob-user`'s
+      list after the cache TTL, with no re-login needed, since group
+      membership is recomputed against the *current* `projects` table on
       every check.
+- [x] **Multi-group member: picker at login, scoped visibility,
+      switching**: log in as `faye-member` (VIEWER on both
+      `demo-group-alpha` and `demo-group-beta`). Login lands on
+      `/login/choose-group` showing both groups at VIEWER. Choosing
+      `demo-group-alpha` shows only `demo-team-alpha` and no "New
+      Project" button (VIEWER can't create). Switching to
+      `demo-group-beta` via the in-UI group switcher updates the project
+      list to show only `demo-team-beta`. Verified live.
+- [x] **Single-group project-group admin, scoped like any other member**:
+      log in as `grace-groupadmin` (ADMIN on `demo-group-alpha` only, one
+      group). No picker (implicit active group, same as `bob-user`/
+      `dave-user`). Sees only `demo-team-alpha` -- unlike `alice-admin`,
+      whose *global* ADMIN role bypasses RLS regardless of group
+      membership, `grace-groupadmin` is an ordinary account (global role
+      MEMBER) whose elevated tier is entirely group-scoped: "New Project"
+      is visible (ADMIN-tier, write-capable) but only ever creates into
+      `demo-group-alpha`. Verified live.
+- [x] **Multi-group project-group admin: picker, scoped visibility and
+      creation, switching**: log in as `henry-groupadmin` (ADMIN on both
+      `demo-group-alpha` and `demo-group-beta`). Picker shows both groups
+      at ADMIN. While viewing `demo-group-alpha`, "New Project" is
+      visible; creating one lands it in `demo-group-alpha` and it's
+      immediately visible in that view. Switching to `demo-group-beta`
+      shows only `demo-team-beta` -- neither `demo-team-alpha` nor the
+      just-created project are visible, confirming creation and read
+      access are both scoped to the *active* group, not the union of
+      held groups. Verified live.
 
 ## Notes
 
 - Access is recomputed on every check from `users.idp_groups` (set at
-  login) against `group-mapping.yaml` and the current `projects` table —
-  there's no `project_grants` table to inspect or clean up. Revoking
-  access is just editing the YAML; no direct DB write needed.
-- There is currently **no admin UI or GraphQL mutation** to hand-grant a
-  project to a user — the only path is the OIDC-group + mapping-file
-  route demoed here. Manual (non-IdP) per-user grants were considered and
+  login) against `external_role_project_group_mappings` and the current
+  `projects` table — there's no per-project grant table to inspect or
+  clean up. Revoking access is a `DELETE`/`UPDATE` on that table (or, in
+  production, whatever the external onboarding process does); no
+  Phoenix-side mutation exists for it.
+- There is currently **no admin UI or GraphQL mutation** to hand-edit the
+  external-role -> project-group mapping — by design (the requirement:
+  this table is maintained by an onboarding process external to
+  Phoenix). The only path is direct DB writes, as `seed_projects.py`
+  does here. Manual (non-IdP) per-user grants were considered and
   intentionally dropped: all project access flows through IdP group
   claims.
 - Ingest (`/v1/traces`) still requires authentication like every other

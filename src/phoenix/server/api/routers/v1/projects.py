@@ -13,6 +13,7 @@ from phoenix.db.helpers import (
     exclude_dataset_evaluator_projects,
     exclude_experiment_projects,
 )
+from phoenix.server.access.resolution import get_default_project_group_id
 from phoenix.server.api.routers.v1.models import V1RoutesBaseModel
 from phoenix.server.api.routers.v1.utils import (
     PaginatedResponseBody,
@@ -220,9 +221,14 @@ async def create_project(
         HTTPException: If any validation error occurs.
     """
     async with request.app.state.db() as session:
+        # Admin-only management API, not a user "viewing" flow -- there's
+        # no active project group to draw from here, so new projects land
+        # in the well-known default group (same as OTLP-ingest
+        # auto-created projects).
         project = models.Project(
             name=request_body.name,
             description=request_body.description,
+            project_group_id=await get_default_project_group_id(session),
         )
         session.add(project)
         await session.flush()

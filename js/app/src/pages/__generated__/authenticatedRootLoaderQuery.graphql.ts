@@ -1,5 +1,5 @@
 /**
- * @generated SignedSource<<ee1f38273069ead68d35f9ac3e16f94d>>
+ * @generated SignedSource<<59b2cab2b301dee00cd1b129462e2702>>
  * @lightSyntaxTransform
  */
 
@@ -23,9 +23,15 @@ export type authenticatedRootLoaderQuery$data = {
     readonly webAccessEnabled: boolean;
   };
   readonly viewer: {
+    readonly activeProjectGroup: {
+      readonly id: string;
+    } | null;
     readonly email: string | null;
     readonly id: string;
     readonly passwordNeedsReset: boolean;
+    readonly projectGroups: ReadonlyArray<{
+      readonly id: string;
+    }>;
     readonly username: string;
   } | null;
   readonly " $fragmentSpreads": FragmentRefs<"ViewerContext_viewer">;
@@ -138,21 +144,35 @@ v4 = {
   "name": "passwordNeedsReset",
   "storageKey": null
 },
-v5 = {
+v5 = [
+  (v1/*:: as any*/)
+],
+v6 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
   "name": "name",
   "storageKey": null
 },
-v6 = {
+v7 = [
+  (v1/*:: as any*/),
+  (v6/*:: as any*/),
+  {
+    "alias": null,
+    "args": null,
+    "kind": "ScalarField",
+    "name": "role",
+    "storageKey": null
+  }
+],
+v8 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
   "name": "createdAt",
   "storageKey": null
 },
-v7 = {
+v9 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
@@ -183,7 +203,27 @@ return {
           (v1/*:: as any*/),
           (v2/*:: as any*/),
           (v3/*:: as any*/),
-          (v4/*:: as any*/)
+          (v4/*:: as any*/),
+          {
+            "alias": null,
+            "args": null,
+            "concreteType": "ProjectGroup",
+            "kind": "LinkedField",
+            "name": "activeProjectGroup",
+            "plural": false,
+            "selections": (v5/*:: as any*/),
+            "storageKey": null
+          },
+          {
+            "alias": null,
+            "args": null,
+            "concreteType": "ProjectGroup",
+            "kind": "LinkedField",
+            "name": "projectGroups",
+            "plural": true,
+            "selections": (v5/*:: as any*/),
+            "storageKey": null
+          }
         ],
         "storageKey": null
       }
@@ -230,7 +270,7 @@ return {
             "name": "role",
             "plural": false,
             "selections": [
-              (v5/*:: as any*/),
+              (v6/*:: as any*/),
               (v1/*:: as any*/)
             ],
             "storageKey": null
@@ -245,13 +285,33 @@ return {
           {
             "alias": null,
             "args": null,
+            "concreteType": "ProjectGroup",
+            "kind": "LinkedField",
+            "name": "activeProjectGroup",
+            "plural": false,
+            "selections": (v7/*:: as any*/),
+            "storageKey": null
+          },
+          {
+            "alias": null,
+            "args": null,
+            "concreteType": "ProjectGroup",
+            "kind": "LinkedField",
+            "name": "projectGroups",
+            "plural": true,
+            "selections": (v7/*:: as any*/),
+            "storageKey": null
+          },
+          {
+            "alias": null,
+            "args": null,
             "concreteType": "UserApiKey",
             "kind": "LinkedField",
             "name": "apiKeys",
             "plural": true,
             "selections": [
               (v1/*:: as any*/),
-              (v5/*:: as any*/),
+              (v6/*:: as any*/),
               {
                 "alias": null,
                 "args": null,
@@ -259,8 +319,8 @@ return {
                 "name": "description",
                 "storageKey": null
               },
-              (v6/*:: as any*/),
-              (v7/*:: as any*/)
+              (v8/*:: as any*/),
+              (v9/*:: as any*/)
             ],
             "storageKey": null
           },
@@ -301,8 +361,8 @@ return {
                 "name": "scopes",
                 "storageKey": null
               },
-              (v6/*:: as any*/),
-              (v7/*:: as any*/),
+              (v8/*:: as any*/),
+              (v9/*:: as any*/),
               {
                 "alias": null,
                 "args": null,
@@ -321,16 +381,16 @@ return {
     ]
   },
   "params": {
-    "cacheID": "3d9c3645535235ec8116ea14b07aa1b3",
+    "cacheID": "ef66d62bd319ac8e9f906cb2d736469b",
     "id": null,
     "metadata": {},
     "name": "authenticatedRootLoaderQuery",
     "operationKind": "query",
-    "text": "query authenticatedRootLoaderQuery {\n  ...ViewerContext_viewer\n  agentsConfig {\n    collectorEndpoint\n    assistantProjectName\n    forceTracing\n    webAccessEnabled\n    assistantEnabled\n    allowLocalTraces\n    allowRemoteExport\n    sessionRetentionMaxIdleDays\n    sessionRetentionMaxCountPerUser\n  }\n  viewer {\n    id\n    username\n    email\n    passwordNeedsReset\n  }\n}\n\nfragment AuthorizedApplicationsCardFragment on User {\n  id\n  oauth2Grants {\n    id\n    clientName\n    clientId\n    isFirstParty\n    scopes\n    createdAt\n    expiresAt\n    lastUsedAt\n  }\n}\n\nfragment ViewerAPIKeysListFragment on User {\n  apiKeys {\n    id\n    name\n    description\n    createdAt\n    expiresAt\n  }\n  id\n}\n\nfragment ViewerContext_viewer on Query {\n  viewer {\n    id\n    username\n    email\n    profilePictureUrl\n    isManagementUser\n    role {\n      name\n      id\n    }\n    authMethod\n    ...ViewerAPIKeysListFragment\n    ...AuthorizedApplicationsCardFragment\n  }\n}\n"
+    "text": "query authenticatedRootLoaderQuery {\n  ...ViewerContext_viewer\n  agentsConfig {\n    collectorEndpoint\n    assistantProjectName\n    forceTracing\n    webAccessEnabled\n    assistantEnabled\n    allowLocalTraces\n    allowRemoteExport\n    sessionRetentionMaxIdleDays\n    sessionRetentionMaxCountPerUser\n  }\n  viewer {\n    id\n    username\n    email\n    passwordNeedsReset\n    activeProjectGroup {\n      id\n    }\n    projectGroups {\n      id\n    }\n  }\n}\n\nfragment AuthorizedApplicationsCardFragment on User {\n  id\n  oauth2Grants {\n    id\n    clientName\n    clientId\n    isFirstParty\n    scopes\n    createdAt\n    expiresAt\n    lastUsedAt\n  }\n}\n\nfragment ViewerAPIKeysListFragment on User {\n  apiKeys {\n    id\n    name\n    description\n    createdAt\n    expiresAt\n  }\n  id\n}\n\nfragment ViewerContext_viewer on Query {\n  viewer {\n    id\n    username\n    email\n    profilePictureUrl\n    isManagementUser\n    role {\n      name\n      id\n    }\n    authMethod\n    activeProjectGroup {\n      id\n      name\n      role\n    }\n    projectGroups {\n      id\n      name\n      role\n    }\n    ...ViewerAPIKeysListFragment\n    ...AuthorizedApplicationsCardFragment\n  }\n}\n"
   }
 };
 })();
 
-(node as any).hash = "021b8df90e9367386a66586ad8dd17ca";
+(node as any).hash = "471b692e726d25096e1b8516d0d997c0";
 
 export default node;

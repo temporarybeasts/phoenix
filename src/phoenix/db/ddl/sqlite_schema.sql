@@ -73,6 +73,44 @@ CREATE INDEX ix_oauth2_clients_registration_client_ip ON oauth2_clients
     (registration_client_ip, created_at);
 
 
+-- Table: project_groups
+-- ---------------------
+CREATE TABLE project_groups (
+    id INTEGER NOT NULL,
+    name VARCHAR NOT NULL,
+    description VARCHAR,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT pk_project_groups PRIMARY KEY (id)
+);
+
+CREATE UNIQUE INDEX ix_project_groups_name ON project_groups (name);
+
+
+-- Table: external_role_project_group_mappings
+-- -------------------------------------------
+CREATE TABLE external_role_project_group_mappings (
+    id INTEGER NOT NULL,
+    external_role VARCHAR NOT NULL,
+    project_group_id INTEGER NOT NULL,
+    role VARCHAR NOT NULL
+        CONSTRAINT "ck_external_role_project_group_mappings_`valid_project_group_role`"
+        CHECK (role IN ('VIEWER', 'MEMBER', 'ADMIN')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT pk_external_role_project_group_mappings PRIMARY KEY (id),
+    CONSTRAINT fk_external_role_project_group_mappings_project_group_id_project_groups
+        FOREIGN KEY (project_group_id)
+        REFERENCES project_groups (id)
+        ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX ix_external_role_project_group_mappings_external_role ON external_role_project_group_mappings
+    (external_role);
+CREATE INDEX ix_external_role_project_group_mappings_project_group_id ON external_role_project_group_mappings
+    (project_group_id);
+
+
 -- Table: project_trace_retention_policies
 -- ---------------------------------------
 CREATE TABLE project_trace_retention_policies (
@@ -95,14 +133,20 @@ CREATE TABLE projects (
     created_at TIMESTAMP DEFAULT (CURRENT_TIMESTAMP) NOT NULL,
     updated_at TIMESTAMP DEFAULT (CURRENT_TIMESTAMP) NOT NULL,
     trace_retention_policy_id INTEGER,
+    project_group_id INTEGER NOT NULL,
     CONSTRAINT pk_projects PRIMARY KEY (id),
     CONSTRAINT uq_projects_name UNIQUE (name),
+    CONSTRAINT fk_projects_project_group_id_project_groups
+        FOREIGN KEY (project_group_id)
+        REFERENCES project_groups (id)
+        ON DELETE RESTRICT,
     CONSTRAINT fk_projects_trace_retention_policy_id_project_trace_retention_policies
         FOREIGN KEY (trace_retention_policy_id)
         REFERENCES project_trace_retention_policies (id)
         ON DELETE SET NULL
 );
 
+CREATE INDEX ix_projects_project_group_id ON projects (project_group_id);
 CREATE INDEX ix_projects_trace_retention_policy_id ON projects
     (trace_retention_policy_id);
 

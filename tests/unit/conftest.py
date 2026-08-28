@@ -24,6 +24,7 @@ from pytest_postgresql.janitor import DatabaseJanitor
 from sqlalchemy import URL, StaticPool
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.orm import Session as OrmSession
 from starlette.types import ASGIApp
 
 from phoenix.db import models
@@ -37,12 +38,113 @@ from phoenix.db.engines import (
     set_sqlite_pragma,
 )
 from phoenix.db.insertion.helpers import DataManipulation
+from phoenix.server.access import resolution as _access_resolution
 from phoenix.server.app import _db, create_app
 from phoenix.server.grpc_server import GrpcServer
 from phoenix.server.types import BatchedCaller, DbSessionFactory
 from phoenix.trace.schemas import Span
 from tests.unit.graphql import AsyncGraphQLClient
 from tests.unit.vcr import CustomVCR
+
+_TEST_DEFAULT_PROJECT_GROUP_NAME = "test-default-project-group"
+
+
+@sqlalchemy.event.listens_for(OrmSession, "before_flush")
+def _assign_default_project_group(
+    session: OrmSession, flush_context: object, instances: object
+) -> None:
+    """Test-only convenience, not production behavior: every project now
+    requires a `project_group_id`, and the overwhelming majority of the test
+    suite's ~60-odd `models.Project(name=...)` call sites don't care which
+    group a project lands in -- only the handful of RBAC/access tests that
+    explicitly construct their own dedicated groups do (they always set
+    `project_group_id`/`project_group` themselves, so this never overrides
+    them). Rather than touch every one of those call sites individually,
+    any `Project` pending flush with no group assigned gets lazily attached
+    to a single shared group, reused across a test's savepoint-scoped
+    transaction (rolled back with everything else at test end) via a
+    plain lookup-or-create.
+
+    Registered on the base `sqlalchemy.orm.Session` class (via the `OrmSession`
+    alias, not a specific
+    engine/fixture) since `AsyncSession.flush()` bridges through this same
+    sync `Session` machinery via SQLAlchemy's asyncio greenlet bridge --
+    this is the standard extension point for exactly this "auto-populate a
+    related object before flush" scenario.
+    """
+    pending_projects = [
+        obj
+        for obj in session.new
+        if isinstance(obj, models.Project)
+        and obj.project_group_id is None
+        and obj.project_group is None
+    ]
+    if not pending_projects:
+        return
+    group = session.execute(
+        sqlalchemy.select(models.ProjectGroup).filter_by(name=_TEST_DEFAULT_PROJECT_GROUP_NAME)
+    ).scalar_one_or_none()
+    if group is None:
+        group = models.ProjectGroup(name=_TEST_DEFAULT_PROJECT_GROUP_NAME)
+        session.add(group)
+    for project in pending_projects:
+        project.project_group = group
+
+
+@sqlalchemy.event.listens_for(OrmSession, "do_orm_execute")
+def _inject_default_project_group_into_core_insert(orm_execute_state: Any) -> Any:
+    """Companion to `_assign_default_project_group` above, for the test
+    suite's other common project-creation shape: a Core-level
+    ``insert(models.Project).values(name=...)`` executed via
+    ``session.execute()``/``.scalar()`` (bypasses the ORM unit-of-work
+    entirely, so the `before_flush` listener never sees it -- but
+    SQLAlchemy 2.0 still treats an `Insert` against an ORM-mapped table as
+    "ORM-enabled" DML when run through a `Session`, which is what routes it
+    through this event; see `do_orm_execute` in the SQLAlchemy docs).
+    """
+    if not orm_execute_state.is_insert:
+        return None
+    statement = orm_execute_state.statement
+    # `statement.table` on an ORM-routed `AnnotatedInsert` is a proxy, not
+    # the literal `models.Project.__table__` instance -- `is` identity
+    # comparison fails even for the right table, so compare by name.
+    if not (
+        isinstance(statement, sqlalchemy.sql.Insert)
+        and getattr(statement.table, "name", None) == models.Project.__table__.name
+    ):
+        return None
+    params = orm_execute_state.parameters or {}
+    already_has_group = "project_group_id" in params or (
+        isinstance(params, (list, tuple)) and any("project_group_id" in p for p in params)
+    )
+    if already_has_group:
+        return None
+    session = orm_execute_state.session
+    group_id = session.execute(
+        sqlalchemy.select(models.ProjectGroup.id).filter_by(name=_TEST_DEFAULT_PROJECT_GROUP_NAME)
+    ).scalar()
+    if group_id is None:
+        group_id = session.execute(
+            sqlalchemy.insert(models.ProjectGroup)
+            .values(name=_TEST_DEFAULT_PROJECT_GROUP_NAME)
+            .returning(models.ProjectGroup.id)
+        ).scalar()
+    if statement._multi_values:
+        # e.g. `phoenix.db.insertion.helpers.insert_on_conflict`'s
+        # `insert(table).values(records)` with `records` a tuple of dicts --
+        # SQLAlchemy's "multi-row" values form. Calling `.values()` again
+        # (the single-row/kwargs form used below) on a statement already in
+        # this form raises "Can't mix single and multiple VALUES formats",
+        # so inject the column into each record directly on a clone instead
+        # of going through the public (format-guarded) `.values()` again.
+        new_statement = statement._clone()
+        project_group_id_col = models.Project.__table__.c.project_group_id
+        new_statement._multi_values = tuple(
+            [{**record, project_group_id_col: group_id} for record in group]
+            for group in statement._multi_values
+        )
+        return orm_execute_state.invoke_statement(statement=new_statement)
+    return orm_execute_state.invoke_statement(statement=statement.values(project_group_id=group_id))
 
 
 def pytest_configure(config: Config) -> None:
@@ -311,6 +413,11 @@ def db(
     request: SubRequest,
     dialect: str,
 ) -> DbSessionFactory:
+    # Process-global TTLCache keyed by (user_id, active_project_group_id),
+    # so without clearing it here, one test's cached resolution leaks into
+    # the next test's completely different DB/app instance, which reuses
+    # the same small auto-incrementing ids.
+    _access_resolution._membership_cache.clear()
     if dialect == "sqlite":
         conn = request.getfixturevalue("_sqlite_test_conn")
         return DbSessionFactory(db=_serialized(_db(conn)), dialect=dialect)
@@ -335,8 +442,11 @@ async def synced_builtin_evaluators(db: DbSessionFactory) -> None:
 
 @pytest.fixture
 async def project(db: DbSessionFactory) -> None:
-    project = models.Project(name="test_project")
     async with db() as session:
+        group = models.ProjectGroup(name="test-project-group")
+        session.add(group)
+        await session.flush()
+        project = models.Project(name="test_project", project_group_id=group.id)
         session.add(project)
 
 

@@ -60,6 +60,7 @@ import { TableEmptyWrap } from "@phoenix/components/table/TableEmptyWrap";
 import { TimestampCell } from "@phoenix/components/table/TimestampCell";
 import { LatencyText } from "@phoenix/components/trace/LatencyText";
 import {
+  useCanCreateProject,
   useNotifySuccess,
   usePreferencesContext,
   useViewerCanModify,
@@ -159,6 +160,7 @@ export function ProjectsPageContent({
   const sortQueryParams = useProjectSortQueryParams();
   const [filter, setFilter] = useState<string>("");
   const notifySuccess = useNotifySuccess();
+  const canCreateProject = useCanCreateProject();
   const {
     data: projectsData,
     loadNext,
@@ -363,10 +365,12 @@ export function ProjectsPageContent({
           >
             <ProjectViewModeToggle />
             <CanModify>
-              <NewProjectButton
-                variant="primary"
-                onProjectCreated={() => refetch({})}
-              />
+              {canCreateProject && (
+                <NewProjectButton
+                  variant="primary"
+                  onProjectCreated={() => refetch({})}
+                />
+              )}
             </CanModify>
           </Flex>
         </Flex>

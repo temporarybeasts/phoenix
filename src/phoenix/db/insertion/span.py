@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from phoenix.db import models
 from phoenix.db.helpers import SupportedSQLDialect
 from phoenix.db.insertion.helpers import OnConflict, insert_on_conflict
+from phoenix.server.access.resolution import get_default_project_group_id
 from phoenix.trace.attributes import get_attribute_value
 from phoenix.trace.schemas import Span, SpanKind, SpanStatusCode
 
@@ -52,8 +53,15 @@ async def insert_span(
                 select(models.Project.id).filter_by(name=project_name)
             )
         ) is None:
+            # Ingest has no authenticated "active group" context of its own
+            # (any authenticated caller can write to any project name) --
+            # an auto-created project always lands in the well-known
+            # default project group, same as other system-managed projects.
+            default_project_group_id = await get_default_project_group_id(session)
             project_rowid = await session.scalar(
-                insert(models.Project).values(name=project_name).returning(models.Project.id)
+                insert(models.Project)
+                .values(name=project_name, project_group_id=default_project_group_id)
+                .returning(models.Project.id)
             )
             assert project_rowid is not None
         trace.project_rowid = project_rowid

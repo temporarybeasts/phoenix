@@ -2647,6 +2647,7 @@ type Mutation {
   """
   deleteProjectSessionAnnotations(input: DeleteProjectAnnotationsInput!): DeleteProjectAnnotationsByNamePayload!
   createProject(input: CreateProjectInput!): ProjectMutationPayload!
+  setActiveProjectGroup(projectGroupId: ID!): Boolean!
   deleteProject(id: ID!): Query!
   clearProject(input: ClearProjectInput!): Query!
   patchProject(input: PatchProjectInput!): ProjectMutationPayload!
@@ -3157,6 +3158,14 @@ input ProjectFilter {
 
 enum ProjectFilterColumn {
   name
+}
+
+type ProjectGroup implements Node {
+  """The Globally Unique ID of this object"""
+  id: ID!
+  name: String!
+  description: String
+  role: String
 }
 
 type ProjectMutationPayload {
@@ -5009,6 +5018,8 @@ type User implements Node {
   createdAt: DateTime!
   authMethod: AuthMethod!
   role: UserRole!
+  projectGroups: [ProjectGroup!]!
+  activeProjectGroup: ProjectGroup
   apiKeys: [UserApiKey!]!
   oauth2Grants: [OAuth2Grant!]!
   apiKeyCount: Int!

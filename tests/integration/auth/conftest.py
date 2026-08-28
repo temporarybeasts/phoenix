@@ -444,33 +444,15 @@ def _env_agents() -> dict[str, str]:
 
 
 @pytest.fixture(scope="package")
-def _env_access_control(tmp_path_factory: pytest.TempPathFactory) -> Mapping[str, str]:
-    """Group->project mapping for
-    tests/integration/auth/test_mcp_sql_project_isolation.py.
-    Package-scoped since PHOENIX_ACCESS_CONTROL_GROUP_MAPPING_FILE is only
-    read once per server process -- these two entries are inert for every
-    other test in this package, since their users never hold these group
-    names."""
-    import yaml
-
-    mapping_file = tmp_path_factory.mktemp("access_control") / "group-mapping.yaml"
-    mapping_file.write_text(
-        yaml.dump(
-            [
-                {
-                    "idp_group": "mcp-sql-test-project-a",
-                    "projects": ["mcp-sql-test-project-a-*"],
-                    "role": "viewer",
-                },
-                {
-                    "idp_group": "mcp-sql-test-project-b",
-                    "projects": ["mcp-sql-test-project-b-*"],
-                    "role": "viewer",
-                },
-            ]
-        )
-    )
-    return {"PHOENIX_ACCESS_CONTROL_GROUP_MAPPING_FILE": str(mapping_file)}
+def _env_access_control() -> Mapping[str, str]:
+    """No longer an env var: the group->project-group mapping for
+    tests/integration/auth/test_mcp_sql_project_isolation.py is now
+    persisted directly into the database (`ProjectGroup` +
+    `ExternalRoleProjectGroupMapping` rows), the same way an external
+    onboarding process would populate it in production -- see that test
+    file's `_grant_project_access`. Kept as a no-op fixture (rather than
+    removed) only to avoid touching every `_env` composition site."""
+    return {}
 
 
 @pytest.fixture(scope="package")

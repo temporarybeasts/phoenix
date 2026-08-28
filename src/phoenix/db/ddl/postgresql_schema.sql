@@ -75,6 +75,49 @@ CREATE INDEX ix_oauth2_clients_registration_client_ip ON public.oauth2_clients
     USING btree (registration_client_ip, created_at);
 
 
+-- Table: project_groups
+-- ---------------------
+CREATE TABLE public.project_groups (
+    id bigserial NOT NULL,
+    name VARCHAR NOT NULL,
+    description VARCHAR,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    CONSTRAINT pk_project_groups PRIMARY KEY (id)
+);
+
+CREATE UNIQUE INDEX ix_project_groups_name ON public.project_groups
+    USING btree (name);
+
+
+-- Table: external_role_project_group_mappings
+-- -------------------------------------------
+CREATE TABLE public.external_role_project_group_mappings (
+    id bigserial NOT NULL,
+    external_role VARCHAR NOT NULL,
+    project_group_id BIGINT NOT NULL,
+    role VARCHAR NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    CONSTRAINT pk_external_role_project_group_mappings PRIMARY KEY (id),
+    CONSTRAINT "ck_external_role_project_group_mappings_`valid_project__be3b"
+        CHECK (((role)::text = ANY ((ARRAY[
+            'VIEWER'::character varying,
+            'MEMBER'::character varying,
+            'ADMIN'::character varying
+        ])::text[]))),
+    CONSTRAINT fk_external_role_project_group_mappings_project_group_i_f8aa
+        FOREIGN KEY (project_group_id)
+        REFERENCES public.project_groups (id)
+        ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX ix_external_role_project_group_mappings_external_role ON public.external_role_project_group_mappings
+    USING btree (external_role);
+CREATE INDEX ix_external_role_project_group_mappings_project_group_id ON public.external_role_project_group_mappings
+    USING btree (project_group_id);
+
+
 -- Table: project_trace_retention_policies
 -- ---------------------------------------
 CREATE TABLE public.project_trace_retention_policies (
@@ -97,15 +140,22 @@ CREATE TABLE public.projects (
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
     trace_retention_policy_id INTEGER,
+    project_group_id BIGINT NOT NULL,
     CONSTRAINT pk_projects PRIMARY KEY (id),
     CONSTRAINT uq_projects_name
         UNIQUE (name),
+    CONSTRAINT fk_projects_project_group_id_project_groups
+        FOREIGN KEY (project_group_id)
+        REFERENCES public.project_groups (id)
+        ON DELETE RESTRICT,
     CONSTRAINT fk_projects_trace_retention_policy_id_project_trace_ret_aa47
         FOREIGN KEY (trace_retention_policy_id)
         REFERENCES public.project_trace_retention_policies (id)
         ON DELETE SET NULL
 );
 
+CREATE INDEX ix_projects_project_group_id ON public.projects
+    USING btree (project_group_id);
 CREATE INDEX ix_projects_trace_retention_policy_id ON public.projects
     USING btree (trace_retention_policy_id);
 

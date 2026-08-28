@@ -50,6 +50,26 @@ export function AuthenticatedRoot() {
     );
   }
 
+  // A user in 2+ project groups must explicitly pick which one they're
+  // viewing (see phoenix.server.access.resolution) -- normally handled by
+  // the login flow itself (a redirect/response flag from /auth/login,
+  // /auth/ldap/login, or the OAuth2 callback), but this is the safety net
+  // for reaching the authenticated shell some other way (e.g. a stale
+  // active-group cookie cleared mid-session, or a direct SPA navigation
+  // that never passed through a login response).
+  if (
+    data.viewer &&
+    data.viewer.activeProjectGroup == null &&
+    data.viewer.projectGroups.length > 1
+  ) {
+    return (
+      <Navigate
+        to={createRedirectUrlWithReturn({ path: "/login/choose-group" })}
+        replace
+      />
+    );
+  }
+
   return (
     <ViewerProvider query={data}>
       <AgentProvider agentsConfig={data.agentsConfig}>

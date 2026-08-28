@@ -23,6 +23,12 @@ export const authenticatedRootLoaderQueryNode = graphql`
       username
       email
       passwordNeedsReset
+      activeProjectGroup {
+        id
+      }
+      projectGroups {
+        id
+      }
     }
   }
 `;

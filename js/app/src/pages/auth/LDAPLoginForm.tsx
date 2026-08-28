@@ -16,6 +16,7 @@ import {
 } from "@phoenix/components";
 import {
   assignAppRelativeLocation,
+  createRedirectUrlWithReturn,
   getReturnUrl,
   isServerOwnedPath,
   prependBasename,
@@ -51,6 +52,7 @@ export function LDAPLoginForm(props: LDAPLoginFormProps) {
         username: params.username.trim(),
       };
 
+      let requiresGroupSelection = false;
       try {
         const response = await fetch(prependBasename("/auth/ldap/login"), {
           method: "POST",
@@ -67,11 +69,30 @@ export function LDAPLoginForm(props: LDAPLoginFormProps) {
           setError(errorMessage);
           return;
         }
+        // A multi-group user gets a 200 + body instead of the usual empty
+        // 204 -- see _create_auth_response in phoenix.server.api.routers.auth.
+        // Login itself already succeeded at this point (cookies are set),
+        // so a body-parsing hiccup here must not surface as "Invalid
+        // login" -- it's isolated from the network try/catch above.
+        if (response.status !== 204) {
+          try {
+            const payload = (await response.json()) as {
+              requiresGroupSelection?: boolean;
+            };
+            requiresGroupSelection = payload.requiresGroupSelection === true;
+          } catch {
+            // Fall through to normal post-login navigation.
+          }
+        }
       } catch (_error) {
         setError("Invalid login");
         return;
       } finally {
         setIsLoading(() => false);
+      }
+      if (requiresGroupSelection) {
+        navigate(createRedirectUrlWithReturn({ path: "/login/choose-group" }));
+        return;
       }
       const returnUrl = getReturnUrl();
       if (isServerOwnedPath(returnUrl)) {

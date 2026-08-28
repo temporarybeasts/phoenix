@@ -58,6 +58,7 @@ import type {
 import {
   AuthenticatedRoot,
   authenticatedRootLoader,
+  ChooseProjectGroupPage,
   dashboardsLoader,
   DashboardsEmptyPage,
   DashboardsRoot,
@@ -177,6 +178,7 @@ export const appRouteObjects = createRoutesFromElements(
       */}
     <Route path="/v1/*" element={<Navigate to="/" replace />} />
     <Route path="/login" element={<LoginPage />} />
+    <Route path="/login/choose-group" element={<ChooseProjectGroupPage />} />
     <Route path="/oauth2/consent" element={<OAuth2ConsentPage />} />
     {/*
         When authentication is enabled the server handles /oauth2/authorize

@@ -79,6 +79,7 @@ class Facilitator:
             _ensure_user_roles,
             _get_system_user_id,
             partial(_ensure_admins, email_sender=self._email_sender),
+            _ensure_default_project_group,
             _ensure_default_project_trace_retention_policy,
             _ensure_model_costs,
             _ensure_builtin_evaluators,
@@ -411,6 +412,32 @@ async def _delete_expired_childless_records(
     for exc in exceptions:
         if isinstance(exc, Exception):
             logger.error(f"Failed to delete childless records: {exc}")
+
+
+async def _ensure_default_project_group(db: DbSessionFactory) -> None:
+    """Ensures the well-known default project group (see
+    `phoenix.config.DEFAULT_PROJECT_GROUP_NAME`) exists -- the landing
+    group for OTLP-ingest-auto-created projects and other system-managed
+    projects created with no authenticated "active group" context of their
+    own (see `phoenix.server.access.resolution.get_default_project_group_id`).
+
+    Normally created by migration `acd16dbc13d0_project_groups.py`, which
+    also backfills every pre-existing project into it -- but that backfill
+    never runs against a `create_all`-based database (e.g. most unit
+    tests), so this is required for those to have any group to land a
+    project in at all. Idempotent, mirroring
+    `_ensure_default_project_trace_retention_policy` below.
+    """
+    async with db() as session:
+        if await session.scalar(
+            sa.select(
+                sa.exists().where(models.ProjectGroup.name == config.DEFAULT_PROJECT_GROUP_NAME)
+            )
+        ):
+            return
+        await session.execute(
+            sa.insert(models.ProjectGroup), [{"name": config.DEFAULT_PROJECT_GROUP_NAME}]
+        )
 
 
 async def _ensure_default_project_trace_retention_policy(db: DbSessionFactory) -> None:

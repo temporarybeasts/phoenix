@@ -1,5 +1,5 @@
 /**
- * @generated SignedSource<<b7ba27145c0ff20fbbe7b99d95078006>>
+ * @generated SignedSource<<8bc2627c190c5eadf7cfe56b80dc368b>>
  * @lightSyntaxTransform
  */
 
@@ -33,14 +33,25 @@ v1 = {
   "name": "name",
   "storageKey": null
 },
-v2 = {
+v2 = [
+  (v0/*:: as any*/),
+  (v1/*:: as any*/),
+  {
+    "alias": null,
+    "args": null,
+    "kind": "ScalarField",
+    "name": "role",
+    "storageKey": null
+  }
+],
+v3 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
   "name": "createdAt",
   "storageKey": null
 },
-v3 = {
+v4 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
@@ -129,6 +140,26 @@ return {
           {
             "alias": null,
             "args": null,
+            "concreteType": "ProjectGroup",
+            "kind": "LinkedField",
+            "name": "activeProjectGroup",
+            "plural": false,
+            "selections": (v2/*:: as any*/),
+            "storageKey": null
+          },
+          {
+            "alias": null,
+            "args": null,
+            "concreteType": "ProjectGroup",
+            "kind": "LinkedField",
+            "name": "projectGroups",
+            "plural": true,
+            "selections": (v2/*:: as any*/),
+            "storageKey": null
+          },
+          {
+            "alias": null,
+            "args": null,
             "concreteType": "UserApiKey",
             "kind": "LinkedField",
             "name": "apiKeys",
@@ -143,8 +174,8 @@ return {
                 "name": "description",
                 "storageKey": null
               },
-              (v2/*:: as any*/),
-              (v3/*:: as any*/)
+              (v3/*:: as any*/),
+              (v4/*:: as any*/)
             ],
             "storageKey": null
           },
@@ -185,8 +216,8 @@ return {
                 "name": "scopes",
                 "storageKey": null
               },
-              (v2/*:: as any*/),
               (v3/*:: as any*/),
+              (v4/*:: as any*/),
               {
                 "alias": null,
                 "args": null,
@@ -203,16 +234,16 @@ return {
     ]
   },
   "params": {
-    "cacheID": "67fdf1bb616d5781701a75f68282f178",
+    "cacheID": "cb69dec0c93e33b27031dd315163882c",
     "id": null,
     "metadata": {},
     "name": "ViewerContextRefetchQuery",
     "operationKind": "query",
-    "text": "query ViewerContextRefetchQuery {\n  ...ViewerContext_viewer\n}\n\nfragment AuthorizedApplicationsCardFragment on User {\n  id\n  oauth2Grants {\n    id\n    clientName\n    clientId\n    isFirstParty\n    scopes\n    createdAt\n    expiresAt\n    lastUsedAt\n  }\n}\n\nfragment ViewerAPIKeysListFragment on User {\n  apiKeys {\n    id\n    name\n    description\n    createdAt\n    expiresAt\n  }\n  id\n}\n\nfragment ViewerContext_viewer on Query {\n  viewer {\n    id\n    username\n    email\n    profilePictureUrl\n    isManagementUser\n    role {\n      name\n      id\n    }\n    authMethod\n    ...ViewerAPIKeysListFragment\n    ...AuthorizedApplicationsCardFragment\n  }\n}\n"
+    "text": "query ViewerContextRefetchQuery {\n  ...ViewerContext_viewer\n}\n\nfragment AuthorizedApplicationsCardFragment on User {\n  id\n  oauth2Grants {\n    id\n    clientName\n    clientId\n    isFirstParty\n    scopes\n    createdAt\n    expiresAt\n    lastUsedAt\n  }\n}\n\nfragment ViewerAPIKeysListFragment on User {\n  apiKeys {\n    id\n    name\n    description\n    createdAt\n    expiresAt\n  }\n  id\n}\n\nfragment ViewerContext_viewer on Query {\n  viewer {\n    id\n    username\n    email\n    profilePictureUrl\n    isManagementUser\n    role {\n      name\n      id\n    }\n    authMethod\n    activeProjectGroup {\n      id\n      name\n      role\n    }\n    projectGroups {\n      id\n      name\n      role\n    }\n    ...ViewerAPIKeysListFragment\n    ...AuthorizedApplicationsCardFragment\n  }\n}\n"
   }
 };
 })();
 
-(node as any).hash = "53341d080ff76da24b2f1bc9e36c4e23";
+(node as any).hash = "8bbcfdd793d55cc29cf0d947ee68fa15";
 
 export default node;
