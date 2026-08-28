@@ -1,0 +1,2158 @@
+[1m[33mwarning[39m[0m[1m:[0m [1mFailed to parse `[36mpyproject.toml[39m` during settings discovery:
+  TOML parse error at line 440, column 17
+      |
+  440 | exclude-newer = "3 days"
+      |                 ^^^^^^^^
+  failed to parse year in date "3 days": failed to parse "3 da" as year (a four digit integer): invalid digit, expected 0-9 but got  
+[0m
+🏃‍♀️‍➡️ Running migrations on the database.
+---------------------------
+2026-08-28 15:27:09,202 INFO sqlalchemy.engine.Engine select pg_catalog.version()
+2026-08-28 15:27:09,202 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-08-28 15:27:09,206 INFO sqlalchemy.engine.Engine select current_schema()
+2026-08-28 15:27:09,206 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-08-28 15:27:09,208 INFO sqlalchemy.engine.Engine show standard_conforming_strings
+2026-08-28 15:27:09,209 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-08-28 15:27:09,211 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-08-28 15:27:09,212 INFO sqlalchemy.engine.Engine SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = $1::VARCHAR AND pg_catalog.pg_class.relkind = ANY (ARRAY[$2::VARCHAR, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $7::VARCHAR
+2026-08-28 15:27:09,212 INFO sqlalchemy.engine.Engine [generated in 0.00007s] ('alembic_version', 'r', 'p', 'f', 'v', 'm', 'pg_catalog')
+2026-08-28 15:27:09,214 INFO sqlalchemy.engine.Engine SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = $1::VARCHAR AND pg_catalog.pg_class.relkind = ANY (ARRAY[$2::VARCHAR, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $7::VARCHAR
+2026-08-28 15:27:09,214 INFO sqlalchemy.engine.Engine [cached since 0.002443s ago] ('alembic_version', 'r', 'p', 'f', 'v', 'm', 'pg_catalog')
+2026-08-28 15:27:09,215 INFO sqlalchemy.engine.Engine 
+CREATE TABLE alembic_version (
+	version_num VARCHAR(32) NOT NULL, 
+	CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
+)
+
+
+2026-08-28 15:27:09,215 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,229 INFO sqlalchemy.engine.Engine 
+CREATE TABLE projects (
+	id SERIAL NOT NULL, 
+	name VARCHAR NOT NULL, 
+	description VARCHAR, 
+	gradient_start_color VARCHAR DEFAULT '#5bdbff' NOT NULL, 
+	gradient_end_color VARCHAR DEFAULT '#1c76fc' NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_projects PRIMARY KEY (id), 
+	CONSTRAINT uq_projects_name UNIQUE (name)
+)
+
+
+2026-08-28 15:27:09,229 INFO sqlalchemy.engine.Engine [no key 0.00007s] ()
+2026-08-28 15:27:09,233 INFO sqlalchemy.engine.Engine 
+CREATE TABLE traces (
+	id SERIAL NOT NULL, 
+	project_rowid INTEGER NOT NULL, 
+	trace_id VARCHAR NOT NULL, 
+	start_time TIMESTAMP WITH TIME ZONE NOT NULL, 
+	end_time TIMESTAMP WITH TIME ZONE NOT NULL, 
+	CONSTRAINT pk_traces PRIMARY KEY (id), 
+	CONSTRAINT fk_traces_project_rowid_projects FOREIGN KEY(project_rowid) REFERENCES projects (id) ON DELETE CASCADE, 
+	CONSTRAINT uq_traces_trace_id UNIQUE (trace_id)
+)
+
+
+2026-08-28 15:27:09,233 INFO sqlalchemy.engine.Engine [no key 0.00007s] ()
+2026-08-28 15:27:09,237 INFO sqlalchemy.engine.Engine CREATE INDEX ix_traces_project_rowid ON traces (project_rowid)
+2026-08-28 15:27:09,237 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,238 INFO sqlalchemy.engine.Engine CREATE INDEX ix_traces_start_time ON traces (start_time)
+2026-08-28 15:27:09,238 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,240 INFO sqlalchemy.engine.Engine 
+CREATE TABLE spans (
+	id SERIAL NOT NULL, 
+	trace_rowid INTEGER NOT NULL, 
+	span_id VARCHAR NOT NULL, 
+	parent_id VARCHAR, 
+	name VARCHAR NOT NULL, 
+	span_kind VARCHAR NOT NULL, 
+	start_time TIMESTAMP WITH TIME ZONE NOT NULL, 
+	end_time TIMESTAMP WITH TIME ZONE NOT NULL, 
+	attributes JSONB NOT NULL, 
+	events JSONB NOT NULL, 
+	status_code VARCHAR DEFAULT 'UNSET' NOT NULL CONSTRAINT "ck_spans_`valid_status`" CHECK (status_code IN ('OK', 'ERROR', 'UNSET')), 
+	status_message VARCHAR NOT NULL, 
+	cumulative_error_count INTEGER NOT NULL, 
+	cumulative_llm_token_count_prompt INTEGER NOT NULL, 
+	cumulative_llm_token_count_completion INTEGER NOT NULL, 
+	CONSTRAINT pk_spans PRIMARY KEY (id), 
+	CONSTRAINT fk_spans_trace_rowid_traces FOREIGN KEY(trace_rowid) REFERENCES traces (id) ON DELETE CASCADE, 
+	CONSTRAINT uq_spans_span_id UNIQUE (span_id)
+)
+
+
+2026-08-28 15:27:09,240 INFO sqlalchemy.engine.Engine [no key 0.00006s] ()
+2026-08-28 15:27:09,244 INFO sqlalchemy.engine.Engine CREATE INDEX ix_spans_parent_id ON spans (parent_id)
+2026-08-28 15:27:09,244 INFO sqlalchemy.engine.Engine [no key 0.00006s] ()
+2026-08-28 15:27:09,245 INFO sqlalchemy.engine.Engine CREATE INDEX ix_spans_start_time ON spans (start_time)
+2026-08-28 15:27:09,245 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,246 INFO sqlalchemy.engine.Engine CREATE INDEX ix_spans_trace_rowid ON spans (trace_rowid)
+2026-08-28 15:27:09,246 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,248 INFO sqlalchemy.engine.Engine CREATE INDEX ix_latency ON spans ((end_time - start_time))
+2026-08-28 15:27:09,248 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,249 INFO sqlalchemy.engine.Engine CREATE INDEX ix_cumulative_llm_token_count_total ON spans ((cumulative_llm_token_count_prompt + cumulative_llm_token_count_completion))
+2026-08-28 15:27:09,249 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,251 INFO sqlalchemy.engine.Engine 
+CREATE TABLE span_annotations (
+	id SERIAL NOT NULL, 
+	span_rowid INTEGER NOT NULL, 
+	name VARCHAR NOT NULL, 
+	label VARCHAR, 
+	score FLOAT, 
+	explanation VARCHAR, 
+	metadata JSONB NOT NULL, 
+	annotator_kind VARCHAR NOT NULL CONSTRAINT "ck_span_annotations_`valid_annotator_kind`" CHECK (annotator_kind IN ('LLM', 'HUMAN')), 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_span_annotations PRIMARY KEY (id), 
+	CONSTRAINT uq_span_annotations_name_span_rowid UNIQUE (name, span_rowid), 
+	CONSTRAINT fk_span_annotations_span_rowid_spans FOREIGN KEY(span_rowid) REFERENCES spans (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,251 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,254 INFO sqlalchemy.engine.Engine CREATE INDEX ix_span_annotations_label ON span_annotations (label)
+2026-08-28 15:27:09,254 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,255 INFO sqlalchemy.engine.Engine CREATE INDEX ix_span_annotations_span_rowid ON span_annotations (span_rowid)
+2026-08-28 15:27:09,255 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,257 INFO sqlalchemy.engine.Engine CREATE INDEX ix_span_annotations_score ON span_annotations (score)
+2026-08-28 15:27:09,257 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,259 INFO sqlalchemy.engine.Engine 
+CREATE TABLE trace_annotations (
+	id SERIAL NOT NULL, 
+	trace_rowid INTEGER NOT NULL, 
+	name VARCHAR NOT NULL, 
+	label VARCHAR, 
+	score FLOAT, 
+	explanation VARCHAR, 
+	metadata JSONB NOT NULL, 
+	annotator_kind VARCHAR NOT NULL CONSTRAINT "ck_trace_annotations_`valid_annotator_kind`" CHECK (annotator_kind IN ('LLM', 'HUMAN')), 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_trace_annotations PRIMARY KEY (id), 
+	CONSTRAINT uq_trace_annotations_name_trace_rowid UNIQUE (name, trace_rowid), 
+	CONSTRAINT fk_trace_annotations_trace_rowid_traces FOREIGN KEY(trace_rowid) REFERENCES traces (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,259 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,262 INFO sqlalchemy.engine.Engine CREATE INDEX ix_trace_annotations_score ON trace_annotations (score)
+2026-08-28 15:27:09,262 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,263 INFO sqlalchemy.engine.Engine CREATE INDEX ix_trace_annotations_trace_rowid ON trace_annotations (trace_rowid)
+2026-08-28 15:27:09,263 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,264 INFO sqlalchemy.engine.Engine CREATE INDEX ix_trace_annotations_label ON trace_annotations (label)
+2026-08-28 15:27:09,264 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,266 INFO sqlalchemy.engine.Engine 
+CREATE TABLE document_annotations (
+	id SERIAL NOT NULL, 
+	span_rowid INTEGER NOT NULL, 
+	document_position INTEGER NOT NULL, 
+	name VARCHAR NOT NULL, 
+	label VARCHAR, 
+	score FLOAT, 
+	explanation VARCHAR, 
+	metadata JSONB NOT NULL, 
+	annotator_kind VARCHAR NOT NULL CONSTRAINT "ck_document_annotations_`valid_annotator_kind`" CHECK (annotator_kind IN ('LLM', 'HUMAN')), 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_document_annotations PRIMARY KEY (id), 
+	CONSTRAINT uq_document_annotations_name_span_rowid_document_position UNIQUE (name, span_rowid, document_position), 
+	CONSTRAINT fk_document_annotations_span_rowid_spans FOREIGN KEY(span_rowid) REFERENCES spans (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,266 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,270 INFO sqlalchemy.engine.Engine CREATE INDEX ix_document_annotations_span_rowid ON document_annotations (span_rowid)
+2026-08-28 15:27:09,270 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,271 INFO sqlalchemy.engine.Engine CREATE INDEX ix_document_annotations_score ON document_annotations (score)
+2026-08-28 15:27:09,271 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,272 INFO sqlalchemy.engine.Engine CREATE INDEX ix_document_annotations_label ON document_annotations (label)
+2026-08-28 15:27:09,272 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,274 INFO sqlalchemy.engine.Engine INSERT INTO projects (name, description) VALUES ($1::VARCHAR, $2::VARCHAR)
+2026-08-28 15:27:09,274 INFO sqlalchemy.engine.Engine [generated in 0.00005s] ('default', 'Default project')
+2026-08-28 15:27:09,275 INFO sqlalchemy.engine.Engine INSERT INTO alembic_version (version_num) VALUES ('cf03bd6bae1d') RETURNING alembic_version.version_num
+2026-08-28 15:27:09,275 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,275 INFO sqlalchemy.engine.Engine 
+CREATE TABLE datasets (
+	id SERIAL NOT NULL, 
+	name VARCHAR NOT NULL, 
+	description VARCHAR, 
+	metadata JSONB NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_datasets PRIMARY KEY (id), 
+	CONSTRAINT uq_datasets_name UNIQUE (name)
+)
+
+
+2026-08-28 15:27:09,276 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,278 INFO sqlalchemy.engine.Engine 
+CREATE TABLE dataset_versions (
+	id SERIAL NOT NULL, 
+	dataset_id INTEGER NOT NULL, 
+	description VARCHAR, 
+	metadata JSONB NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_dataset_versions PRIMARY KEY (id), 
+	CONSTRAINT fk_dataset_versions_dataset_id_datasets FOREIGN KEY(dataset_id) REFERENCES datasets (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,278 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,280 INFO sqlalchemy.engine.Engine CREATE INDEX ix_dataset_versions_dataset_id ON dataset_versions (dataset_id)
+2026-08-28 15:27:09,280 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,283 INFO sqlalchemy.engine.Engine 
+CREATE TABLE dataset_examples (
+	id SERIAL NOT NULL, 
+	dataset_id INTEGER NOT NULL, 
+	span_rowid INTEGER, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_dataset_examples PRIMARY KEY (id), 
+	CONSTRAINT fk_dataset_examples_dataset_id_datasets FOREIGN KEY(dataset_id) REFERENCES datasets (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_dataset_examples_span_rowid_spans FOREIGN KEY(span_rowid) REFERENCES spans (id) ON DELETE SET NULL
+)
+
+
+2026-08-28 15:27:09,283 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,284 INFO sqlalchemy.engine.Engine CREATE INDEX ix_dataset_examples_span_rowid ON dataset_examples (span_rowid)
+2026-08-28 15:27:09,284 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,286 INFO sqlalchemy.engine.Engine CREATE INDEX ix_dataset_examples_dataset_id ON dataset_examples (dataset_id)
+2026-08-28 15:27:09,286 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,287 INFO sqlalchemy.engine.Engine 
+CREATE TABLE dataset_example_revisions (
+	id SERIAL NOT NULL, 
+	dataset_example_id INTEGER NOT NULL, 
+	dataset_version_id INTEGER NOT NULL, 
+	input JSONB NOT NULL, 
+	output JSONB NOT NULL, 
+	metadata JSONB NOT NULL, 
+	revision_kind VARCHAR NOT NULL CONSTRAINT "ck_dataset_example_revisions_`valid_revision_kind`" CHECK (revision_kind IN ('CREATE', 'PATCH', 'DELETE')), 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_dataset_example_revisions PRIMARY KEY (id), 
+	CONSTRAINT uq_dataset_example_revisions_dataset_example_id_dataset_bbf2 UNIQUE (dataset_example_id, dataset_version_id), 
+	CONSTRAINT fk_dataset_example_revisions_dataset_example_id_dataset_c72a FOREIGN KEY(dataset_example_id) REFERENCES dataset_examples (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_dataset_example_revisions_dataset_version_id_dataset_3a56 FOREIGN KEY(dataset_version_id) REFERENCES dataset_versions (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,287 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,290 INFO sqlalchemy.engine.Engine CREATE INDEX ix_dataset_example_revisions_dataset_example_id ON dataset_example_revisions (dataset_example_id)
+2026-08-28 15:27:09,290 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,291 INFO sqlalchemy.engine.Engine CREATE INDEX ix_dataset_example_revisions_dataset_version_id ON dataset_example_revisions (dataset_version_id)
+2026-08-28 15:27:09,291 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,293 INFO sqlalchemy.engine.Engine 
+CREATE TABLE experiments (
+	id SERIAL NOT NULL, 
+	dataset_id INTEGER NOT NULL, 
+	dataset_version_id INTEGER NOT NULL, 
+	name VARCHAR NOT NULL, 
+	description VARCHAR, 
+	repetitions INTEGER NOT NULL, 
+	metadata JSONB NOT NULL, 
+	project_name VARCHAR, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_experiments PRIMARY KEY (id), 
+	CONSTRAINT fk_experiments_dataset_id_datasets FOREIGN KEY(dataset_id) REFERENCES datasets (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_experiments_dataset_version_id_dataset_versions FOREIGN KEY(dataset_version_id) REFERENCES dataset_versions (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,293 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,295 INFO sqlalchemy.engine.Engine CREATE INDEX ix_experiments_dataset_id ON experiments (dataset_id)
+2026-08-28 15:27:09,295 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,296 INFO sqlalchemy.engine.Engine CREATE INDEX ix_experiments_dataset_version_id ON experiments (dataset_version_id)
+2026-08-28 15:27:09,296 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,298 INFO sqlalchemy.engine.Engine CREATE INDEX ix_experiments_project_name ON experiments (project_name)
+2026-08-28 15:27:09,298 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,299 INFO sqlalchemy.engine.Engine 
+CREATE TABLE experiment_runs (
+	id SERIAL NOT NULL, 
+	experiment_id INTEGER NOT NULL, 
+	dataset_example_id INTEGER NOT NULL, 
+	repetition_number INTEGER NOT NULL, 
+	trace_id VARCHAR, 
+	output JSONB NOT NULL, 
+	start_time TIMESTAMP WITH TIME ZONE NOT NULL, 
+	end_time TIMESTAMP WITH TIME ZONE NOT NULL, 
+	prompt_token_count INTEGER, 
+	completion_token_count INTEGER, 
+	error VARCHAR, 
+	CONSTRAINT pk_experiment_runs PRIMARY KEY (id), 
+	CONSTRAINT uq_experiment_runs_experiment_id_dataset_example_id_rep_81e7 UNIQUE (experiment_id, dataset_example_id, repetition_number), 
+	CONSTRAINT fk_experiment_runs_experiment_id_experiments FOREIGN KEY(experiment_id) REFERENCES experiments (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_experiment_runs_dataset_example_id_dataset_examples FOREIGN KEY(dataset_example_id) REFERENCES dataset_examples (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,299 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,302 INFO sqlalchemy.engine.Engine CREATE INDEX ix_experiment_runs_dataset_example_id ON experiment_runs (dataset_example_id)
+2026-08-28 15:27:09,302 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,303 INFO sqlalchemy.engine.Engine CREATE INDEX ix_experiment_runs_experiment_id ON experiment_runs (experiment_id)
+2026-08-28 15:27:09,303 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,305 INFO sqlalchemy.engine.Engine 
+CREATE TABLE experiment_run_annotations (
+	id SERIAL NOT NULL, 
+	experiment_run_id INTEGER NOT NULL, 
+	name VARCHAR NOT NULL, 
+	annotator_kind VARCHAR NOT NULL CONSTRAINT "ck_experiment_run_annotations_`valid_annotator_kind`" CHECK (annotator_kind IN ('LLM', 'CODE', 'HUMAN')), 
+	label VARCHAR, 
+	score FLOAT, 
+	explanation VARCHAR, 
+	trace_id VARCHAR, 
+	error VARCHAR, 
+	metadata JSONB NOT NULL, 
+	start_time TIMESTAMP WITH TIME ZONE NOT NULL, 
+	end_time TIMESTAMP WITH TIME ZONE NOT NULL, 
+	CONSTRAINT pk_experiment_run_annotations PRIMARY KEY (id), 
+	CONSTRAINT uq_experiment_run_annotations_experiment_run_id_name UNIQUE (experiment_run_id, name), 
+	CONSTRAINT fk_experiment_run_annotations_experiment_run_id_experiment_runs FOREIGN KEY(experiment_run_id) REFERENCES experiment_runs (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,305 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,309 INFO sqlalchemy.engine.Engine CREATE INDEX ix_experiment_run_annotations_experiment_run_id ON experiment_run_annotations (experiment_run_id)
+2026-08-28 15:27:09,309 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,311 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='10460e46d750' WHERE alembic_version.version_num = 'cf03bd6bae1d'
+2026-08-28 15:27:09,311 INFO sqlalchemy.engine.Engine [generated in 0.00005s] ()
+2026-08-28 15:27:09,312 INFO sqlalchemy.engine.Engine ALTER TABLE spans ADD COLUMN llm_token_count_prompt INTEGER
+2026-08-28 15:27:09,312 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,313 INFO sqlalchemy.engine.Engine ALTER TABLE spans ADD COLUMN llm_token_count_completion INTEGER
+2026-08-28 15:27:09,313 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,314 INFO sqlalchemy.engine.Engine UPDATE spans SET llm_token_count_prompt=(CAST(spans.attributes #>> $1 AS FLOAT)), llm_token_count_completion=(CAST(spans.attributes #>> $2 AS FLOAT))
+2026-08-28 15:27:09,314 INFO sqlalchemy.engine.Engine [generated in 0.00006s] (['llm', 'token_count', 'prompt'], ['llm', 'token_count', 'completion'])
+2026-08-28 15:27:09,315 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='3be8647b87d8' WHERE alembic_version.version_num = '10460e46d750'
+2026-08-28 15:27:09,315 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,316 INFO sqlalchemy.engine.Engine 
+CREATE TABLE user_roles (
+	id SERIAL NOT NULL, 
+	name VARCHAR NOT NULL, 
+	CONSTRAINT pk_user_roles PRIMARY KEY (id)
+)
+
+
+2026-08-28 15:27:09,316 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,318 INFO sqlalchemy.engine.Engine CREATE UNIQUE INDEX ix_user_roles_name ON user_roles (name)
+2026-08-28 15:27:09,318 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,320 INFO sqlalchemy.engine.Engine 
+CREATE TABLE users (
+	id SERIAL NOT NULL, 
+	user_role_id INTEGER NOT NULL, 
+	username VARCHAR NOT NULL, 
+	email VARCHAR NOT NULL, 
+	profile_picture_url VARCHAR, 
+	password_hash BYTEA, 
+	password_salt BYTEA, 
+	reset_password BOOLEAN NOT NULL, 
+	oauth2_client_id VARCHAR, 
+	oauth2_user_id VARCHAR, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_users PRIMARY KEY (id), 
+	CONSTRAINT "ck_users_`password_hash_and_salt`" CHECK ((password_hash IS NULL) = (password_salt IS NULL)), 
+	CONSTRAINT "ck_users_`oauth2_client_id_and_user_id`" CHECK ((oauth2_client_id IS NULL) = (oauth2_user_id IS NULL)), 
+	CONSTRAINT "ck_users_`exactly_one_auth_method`" CHECK ((password_hash IS NULL) != (oauth2_client_id IS NULL)), 
+	CONSTRAINT uq_users_oauth2_client_id_oauth2_user_id UNIQUE (oauth2_client_id, oauth2_user_id), 
+	CONSTRAINT fk_users_user_role_id_user_roles FOREIGN KEY(user_role_id) REFERENCES user_roles (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,320 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,323 INFO sqlalchemy.engine.Engine CREATE INDEX ix_users_user_role_id ON users (user_role_id)
+2026-08-28 15:27:09,323 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,324 INFO sqlalchemy.engine.Engine CREATE INDEX ix_users_oauth2_user_id ON users (oauth2_user_id)
+2026-08-28 15:27:09,324 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,326 INFO sqlalchemy.engine.Engine CREATE UNIQUE INDEX ix_users_email ON users (email)
+2026-08-28 15:27:09,326 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,327 INFO sqlalchemy.engine.Engine CREATE UNIQUE INDEX ix_users_username ON users (username)
+2026-08-28 15:27:09,327 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,329 INFO sqlalchemy.engine.Engine CREATE INDEX ix_users_oauth2_client_id ON users (oauth2_client_id)
+2026-08-28 15:27:09,329 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,331 INFO sqlalchemy.engine.Engine 
+CREATE TABLE password_reset_tokens (
+	id SERIAL NOT NULL, 
+	user_id INTEGER, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	expires_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	CONSTRAINT pk_password_reset_tokens PRIMARY KEY (id), 
+	CONSTRAINT fk_password_reset_tokens_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,331 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,333 INFO sqlalchemy.engine.Engine CREATE INDEX ix_password_reset_tokens_expires_at ON password_reset_tokens (expires_at)
+2026-08-28 15:27:09,333 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,334 INFO sqlalchemy.engine.Engine CREATE UNIQUE INDEX ix_password_reset_tokens_user_id ON password_reset_tokens (user_id)
+2026-08-28 15:27:09,334 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,335 INFO sqlalchemy.engine.Engine 
+CREATE TABLE refresh_tokens (
+	id SERIAL NOT NULL, 
+	user_id INTEGER, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	expires_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	CONSTRAINT pk_refresh_tokens PRIMARY KEY (id), 
+	CONSTRAINT fk_refresh_tokens_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,336 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,337 INFO sqlalchemy.engine.Engine CREATE INDEX ix_refresh_tokens_user_id ON refresh_tokens (user_id)
+2026-08-28 15:27:09,337 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,338 INFO sqlalchemy.engine.Engine CREATE INDEX ix_refresh_tokens_expires_at ON refresh_tokens (expires_at)
+2026-08-28 15:27:09,338 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,340 INFO sqlalchemy.engine.Engine 
+CREATE TABLE access_tokens (
+	id SERIAL NOT NULL, 
+	user_id INTEGER, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	expires_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	refresh_token_id INTEGER, 
+	CONSTRAINT pk_access_tokens PRIMARY KEY (id), 
+	CONSTRAINT fk_access_tokens_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_access_tokens_refresh_token_id_refresh_tokens FOREIGN KEY(refresh_token_id) REFERENCES refresh_tokens (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,340 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,343 INFO sqlalchemy.engine.Engine CREATE INDEX ix_access_tokens_expires_at ON access_tokens (expires_at)
+2026-08-28 15:27:09,343 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,344 INFO sqlalchemy.engine.Engine CREATE INDEX ix_access_tokens_user_id ON access_tokens (user_id)
+2026-08-28 15:27:09,344 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,345 INFO sqlalchemy.engine.Engine CREATE UNIQUE INDEX ix_access_tokens_refresh_token_id ON access_tokens (refresh_token_id)
+2026-08-28 15:27:09,345 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,347 INFO sqlalchemy.engine.Engine 
+CREATE TABLE api_keys (
+	id SERIAL NOT NULL, 
+	user_id INTEGER, 
+	name VARCHAR NOT NULL, 
+	description VARCHAR, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	expires_at TIMESTAMP WITH TIME ZONE, 
+	CONSTRAINT pk_api_keys PRIMARY KEY (id), 
+	CONSTRAINT fk_api_keys_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,347 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,349 INFO sqlalchemy.engine.Engine CREATE INDEX ix_api_keys_user_id ON api_keys (user_id)
+2026-08-28 15:27:09,349 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,350 INFO sqlalchemy.engine.Engine CREATE INDEX ix_api_keys_expires_at ON api_keys (expires_at)
+2026-08-28 15:27:09,350 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,352 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='cd164e83824f' WHERE alembic_version.version_num = '3be8647b87d8'
+2026-08-28 15:27:09,352 INFO sqlalchemy.engine.Engine [generated in 0.00006s] ()
+2026-08-28 15:27:09,353 INFO sqlalchemy.engine.Engine 
+CREATE TABLE project_sessions (
+	id SERIAL NOT NULL, 
+	session_id VARCHAR NOT NULL, 
+	project_id INTEGER NOT NULL, 
+	start_time TIMESTAMP WITH TIME ZONE NOT NULL, 
+	end_time TIMESTAMP WITH TIME ZONE NOT NULL, 
+	CONSTRAINT pk_project_sessions PRIMARY KEY (id), 
+	CONSTRAINT uq_project_sessions_session_id UNIQUE (session_id), 
+	CONSTRAINT fk_project_sessions_project_id_projects FOREIGN KEY(project_id) REFERENCES projects (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,353 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,357 INFO sqlalchemy.engine.Engine CREATE INDEX ix_project_sessions_end_time ON project_sessions (end_time)
+2026-08-28 15:27:09,357 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,358 INFO sqlalchemy.engine.Engine CREATE INDEX ix_project_sessions_start_time ON project_sessions (start_time)
+2026-08-28 15:27:09,358 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,360 INFO sqlalchemy.engine.Engine CREATE INDEX ix_project_sessions_project_id ON project_sessions (project_id)
+2026-08-28 15:27:09,360 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,361 INFO sqlalchemy.engine.Engine ALTER TABLE traces ADD COLUMN project_session_rowid INTEGER
+2026-08-28 15:27:09,361 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,362 INFO sqlalchemy.engine.Engine ALTER TABLE traces ADD CONSTRAINT fk_traces_project_session_rowid_project_sessions FOREIGN KEY(project_session_rowid) REFERENCES project_sessions (id) ON DELETE CASCADE
+2026-08-28 15:27:09,362 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,363 INFO sqlalchemy.engine.Engine CREATE INDEX ix_traces_project_session_rowid ON traces (project_session_rowid)
+2026-08-28 15:27:09,363 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,365 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='4ded9e43755f' WHERE alembic_version.version_num = 'cd164e83824f'
+2026-08-28 15:27:09,365 INFO sqlalchemy.engine.Engine [generated in 0.00006s] ()
+2026-08-28 15:27:09,366 INFO sqlalchemy.engine.Engine 
+CREATE TABLE prompt_labels (
+	id SERIAL NOT NULL, 
+	name VARCHAR NOT NULL, 
+	description VARCHAR, 
+	color VARCHAR, 
+	CONSTRAINT pk_prompt_labels PRIMARY KEY (id)
+)
+
+
+2026-08-28 15:27:09,366 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,368 INFO sqlalchemy.engine.Engine CREATE UNIQUE INDEX ix_prompt_labels_name ON prompt_labels (name)
+2026-08-28 15:27:09,368 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,370 INFO sqlalchemy.engine.Engine 
+CREATE TABLE prompts (
+	id SERIAL NOT NULL, 
+	source_prompt_id INTEGER, 
+	name VARCHAR NOT NULL, 
+	description VARCHAR, 
+	metadata JSONB NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_prompts PRIMARY KEY (id), 
+	CONSTRAINT fk_prompts_source_prompt_id_prompts FOREIGN KEY(source_prompt_id) REFERENCES prompts (id) ON DELETE SET NULL
+)
+
+
+2026-08-28 15:27:09,370 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,372 INFO sqlalchemy.engine.Engine CREATE INDEX ix_prompts_source_prompt_id ON prompts (source_prompt_id)
+2026-08-28 15:27:09,372 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,374 INFO sqlalchemy.engine.Engine CREATE UNIQUE INDEX ix_prompts_name ON prompts (name)
+2026-08-28 15:27:09,374 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,375 INFO sqlalchemy.engine.Engine 
+CREATE TABLE prompts_prompt_labels (
+	id SERIAL NOT NULL, 
+	prompt_label_id INTEGER NOT NULL, 
+	prompt_id INTEGER NOT NULL, 
+	CONSTRAINT pk_prompts_prompt_labels PRIMARY KEY (id), 
+	CONSTRAINT uq_prompts_prompt_labels_prompt_label_id_prompt_id UNIQUE (prompt_label_id, prompt_id), 
+	CONSTRAINT fk_prompts_prompt_labels_prompt_label_id_prompt_labels FOREIGN KEY(prompt_label_id) REFERENCES prompt_labels (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_prompts_prompt_labels_prompt_id_prompts FOREIGN KEY(prompt_id) REFERENCES prompts (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,375 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,379 INFO sqlalchemy.engine.Engine CREATE INDEX ix_prompts_prompt_labels_prompt_id ON prompts_prompt_labels (prompt_id)
+2026-08-28 15:27:09,379 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,380 INFO sqlalchemy.engine.Engine CREATE INDEX ix_prompts_prompt_labels_prompt_label_id ON prompts_prompt_labels (prompt_label_id)
+2026-08-28 15:27:09,380 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,382 INFO sqlalchemy.engine.Engine 
+CREATE TABLE prompt_versions (
+	id SERIAL NOT NULL, 
+	prompt_id INTEGER NOT NULL, 
+	description VARCHAR, 
+	user_id INTEGER, 
+	template_type VARCHAR NOT NULL CONSTRAINT "ck_prompt_versions_`template_type`" CHECK (template_type IN ('CHAT', 'STR')), 
+	template_format VARCHAR NOT NULL CONSTRAINT "ck_prompt_versions_`template_format`" CHECK (template_format IN ('F_STRING', 'MUSTACHE', 'NONE')), 
+	template JSONB NOT NULL, 
+	invocation_parameters JSONB NOT NULL, 
+	tools JSONB, 
+	response_format JSONB, 
+	model_provider VARCHAR NOT NULL, 
+	model_name VARCHAR NOT NULL, 
+	metadata JSONB NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_prompt_versions PRIMARY KEY (id), 
+	CONSTRAINT fk_prompt_versions_prompt_id_prompts FOREIGN KEY(prompt_id) REFERENCES prompts (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_prompt_versions_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL
+)
+
+
+2026-08-28 15:27:09,382 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,384 INFO sqlalchemy.engine.Engine CREATE INDEX ix_prompt_versions_prompt_id ON prompt_versions (prompt_id)
+2026-08-28 15:27:09,385 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,386 INFO sqlalchemy.engine.Engine CREATE INDEX ix_prompt_versions_user_id ON prompt_versions (user_id)
+2026-08-28 15:27:09,386 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,387 INFO sqlalchemy.engine.Engine 
+CREATE TABLE prompt_version_tags (
+	id SERIAL NOT NULL, 
+	name VARCHAR NOT NULL, 
+	description VARCHAR, 
+	prompt_id INTEGER NOT NULL, 
+	prompt_version_id INTEGER NOT NULL, 
+	user_id INTEGER, 
+	CONSTRAINT pk_prompt_version_tags PRIMARY KEY (id), 
+	CONSTRAINT uq_prompt_version_tags_name_prompt_id UNIQUE (name, prompt_id), 
+	CONSTRAINT fk_prompt_version_tags_prompt_id_prompts FOREIGN KEY(prompt_id) REFERENCES prompts (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_prompt_version_tags_prompt_version_id_prompt_versions FOREIGN KEY(prompt_version_id) REFERENCES prompt_versions (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_prompt_version_tags_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL
+)
+
+
+2026-08-28 15:27:09,388 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,391 INFO sqlalchemy.engine.Engine CREATE INDEX ix_prompt_version_tags_prompt_id ON prompt_version_tags (prompt_id)
+2026-08-28 15:27:09,391 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,392 INFO sqlalchemy.engine.Engine CREATE INDEX ix_prompt_version_tags_user_id ON prompt_version_tags (user_id)
+2026-08-28 15:27:09,392 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,393 INFO sqlalchemy.engine.Engine CREATE INDEX ix_prompt_version_tags_prompt_version_id ON prompt_version_tags (prompt_version_id)
+2026-08-28 15:27:09,393 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,394 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='bc8fea3c2bc8' WHERE alembic_version.version_num = '4ded9e43755f'
+2026-08-28 15:27:09,394 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,396 INFO sqlalchemy.engine.Engine 
+DROP INDEX ix_span_annotations_score
+2026-08-28 15:27:09,396 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,396 INFO sqlalchemy.engine.Engine 
+DROP INDEX ix_span_annotations_label
+2026-08-28 15:27:09,396 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,397 INFO sqlalchemy.engine.Engine ALTER TABLE span_annotations ADD COLUMN user_id INTEGER
+2026-08-28 15:27:09,397 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,398 INFO sqlalchemy.engine.Engine ALTER TABLE span_annotations ADD CONSTRAINT fk_span_annotations_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL
+2026-08-28 15:27:09,398 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,398 INFO sqlalchemy.engine.Engine ALTER TABLE span_annotations ADD COLUMN identifier VARCHAR DEFAULT '' NOT NULL
+2026-08-28 15:27:09,398 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,399 INFO sqlalchemy.engine.Engine ALTER TABLE span_annotations ADD COLUMN source VARCHAR
+2026-08-28 15:27:09,399 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,400 INFO sqlalchemy.engine.Engine ALTER TABLE span_annotations DROP CONSTRAINT "ck_span_annotations_`valid_annotator_kind`"
+2026-08-28 15:27:09,400 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,400 INFO sqlalchemy.engine.Engine ALTER TABLE span_annotations ADD CONSTRAINT "ck_span_annotations_`valid_annotator_kind`" CHECK (annotator_kind IN ('LLM', 'CODE', 'HUMAN'))
+2026-08-28 15:27:09,400 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,401 INFO sqlalchemy.engine.Engine ALTER TABLE span_annotations DROP CONSTRAINT uq_span_annotations_name_span_rowid
+2026-08-28 15:27:09,401 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,401 INFO sqlalchemy.engine.Engine ALTER TABLE span_annotations ADD CONSTRAINT uq_span_annotations_name_span_rowid_identifier UNIQUE (name, span_rowid, identifier)
+2026-08-28 15:27:09,401 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,403 INFO sqlalchemy.engine.Engine 
+                UPDATE span_annotations
+                SET source = CASE
+                    WHEN annotator_kind = 'HUMAN' THEN 'APP'
+                    ELSE 'API'
+                END
+                
+2026-08-28 15:27:09,403 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,404 INFO sqlalchemy.engine.Engine ALTER TABLE span_annotations ALTER COLUMN source SET NOT NULL
+2026-08-28 15:27:09,404 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,404 INFO sqlalchemy.engine.Engine ALTER TABLE span_annotations ADD CONSTRAINT "ck_span_annotations_`valid_source`" CHECK (source IN ('API', 'APP'))
+2026-08-28 15:27:09,404 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,406 INFO sqlalchemy.engine.Engine 
+DROP INDEX ix_trace_annotations_score
+2026-08-28 15:27:09,406 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,406 INFO sqlalchemy.engine.Engine 
+DROP INDEX ix_trace_annotations_label
+2026-08-28 15:27:09,406 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,407 INFO sqlalchemy.engine.Engine ALTER TABLE trace_annotations ADD COLUMN user_id INTEGER
+2026-08-28 15:27:09,407 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,407 INFO sqlalchemy.engine.Engine ALTER TABLE trace_annotations ADD CONSTRAINT fk_trace_annotations_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL
+2026-08-28 15:27:09,407 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,408 INFO sqlalchemy.engine.Engine ALTER TABLE trace_annotations ADD COLUMN identifier VARCHAR DEFAULT '' NOT NULL
+2026-08-28 15:27:09,408 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,409 INFO sqlalchemy.engine.Engine ALTER TABLE trace_annotations ADD COLUMN source VARCHAR
+2026-08-28 15:27:09,409 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,409 INFO sqlalchemy.engine.Engine ALTER TABLE trace_annotations DROP CONSTRAINT "ck_trace_annotations_`valid_annotator_kind`"
+2026-08-28 15:27:09,409 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,410 INFO sqlalchemy.engine.Engine ALTER TABLE trace_annotations ADD CONSTRAINT "ck_trace_annotations_`valid_annotator_kind`" CHECK (annotator_kind IN ('LLM', 'CODE', 'HUMAN'))
+2026-08-28 15:27:09,410 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,411 INFO sqlalchemy.engine.Engine ALTER TABLE trace_annotations DROP CONSTRAINT uq_trace_annotations_name_trace_rowid
+2026-08-28 15:27:09,411 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,411 INFO sqlalchemy.engine.Engine ALTER TABLE trace_annotations ADD CONSTRAINT uq_trace_annotations_name_trace_rowid_identifier UNIQUE (name, trace_rowid, identifier)
+2026-08-28 15:27:09,411 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,413 INFO sqlalchemy.engine.Engine 
+                UPDATE trace_annotations
+                SET source = CASE
+                    WHEN annotator_kind = 'HUMAN' THEN 'APP'
+                    ELSE 'API'
+                END
+                
+2026-08-28 15:27:09,413 INFO sqlalchemy.engine.Engine [generated in 0.00005s] ()
+2026-08-28 15:27:09,413 INFO sqlalchemy.engine.Engine ALTER TABLE trace_annotations ALTER COLUMN source SET NOT NULL
+2026-08-28 15:27:09,413 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,414 INFO sqlalchemy.engine.Engine ALTER TABLE trace_annotations ADD CONSTRAINT "ck_trace_annotations_`valid_source`" CHECK (source IN ('API', 'APP'))
+2026-08-28 15:27:09,414 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,416 INFO sqlalchemy.engine.Engine 
+DROP INDEX ix_document_annotations_score
+2026-08-28 15:27:09,416 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,416 INFO sqlalchemy.engine.Engine 
+DROP INDEX ix_document_annotations_label
+2026-08-28 15:27:09,416 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,417 INFO sqlalchemy.engine.Engine ALTER TABLE document_annotations ADD COLUMN user_id INTEGER
+2026-08-28 15:27:09,417 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,418 INFO sqlalchemy.engine.Engine ALTER TABLE document_annotations ADD CONSTRAINT fk_document_annotations_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL
+2026-08-28 15:27:09,418 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,419 INFO sqlalchemy.engine.Engine ALTER TABLE document_annotations ADD COLUMN identifier VARCHAR DEFAULT '' NOT NULL
+2026-08-28 15:27:09,419 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,419 INFO sqlalchemy.engine.Engine ALTER TABLE document_annotations ADD COLUMN source VARCHAR
+2026-08-28 15:27:09,419 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,420 INFO sqlalchemy.engine.Engine ALTER TABLE document_annotations DROP CONSTRAINT "ck_document_annotations_`valid_annotator_kind`"
+2026-08-28 15:27:09,420 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,420 INFO sqlalchemy.engine.Engine ALTER TABLE document_annotations ADD CONSTRAINT "ck_document_annotations_`valid_annotator_kind`" CHECK (annotator_kind IN ('LLM', 'CODE', 'HUMAN'))
+2026-08-28 15:27:09,420 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,421 INFO sqlalchemy.engine.Engine ALTER TABLE document_annotations DROP CONSTRAINT uq_document_annotations_name_span_rowid_document_position
+2026-08-28 15:27:09,421 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,422 INFO sqlalchemy.engine.Engine ALTER TABLE document_annotations ADD CONSTRAINT uq_document_annotations_name_span_rowid_document_pos_identifier UNIQUE (name, span_rowid, document_position, identifier)
+2026-08-28 15:27:09,422 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,423 INFO sqlalchemy.engine.Engine 
+                UPDATE document_annotations
+                SET source = CASE
+                    WHEN annotator_kind = 'HUMAN' THEN 'APP'
+                    ELSE 'API'
+                END
+                
+2026-08-28 15:27:09,423 INFO sqlalchemy.engine.Engine [generated in 0.00005s] ()
+2026-08-28 15:27:09,424 INFO sqlalchemy.engine.Engine ALTER TABLE document_annotations ALTER COLUMN source SET NOT NULL
+2026-08-28 15:27:09,424 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,425 INFO sqlalchemy.engine.Engine ALTER TABLE document_annotations ADD CONSTRAINT "ck_document_annotations_`valid_source`" CHECK (source IN ('API', 'APP'))
+2026-08-28 15:27:09,425 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,425 INFO sqlalchemy.engine.Engine 
+CREATE TABLE annotation_configs (
+	id SERIAL NOT NULL, 
+	name VARCHAR NOT NULL, 
+	config JSONB NOT NULL, 
+	CONSTRAINT pk_annotation_configs PRIMARY KEY (id), 
+	CONSTRAINT uq_annotation_configs_name UNIQUE (name)
+)
+
+
+2026-08-28 15:27:09,425 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,429 INFO sqlalchemy.engine.Engine 
+CREATE TABLE project_annotation_configs (
+	id SERIAL NOT NULL, 
+	project_id INTEGER NOT NULL, 
+	annotation_config_id INTEGER NOT NULL, 
+	CONSTRAINT pk_project_annotation_configs PRIMARY KEY (id), 
+	CONSTRAINT uq_project_annotation_configs_project_id_annotation_config_id UNIQUE (project_id, annotation_config_id), 
+	CONSTRAINT fk_project_annotation_configs_project_id_projects FOREIGN KEY(project_id) REFERENCES projects (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_project_annotation_configs_annotation_config_id_anno_98f5 FOREIGN KEY(annotation_config_id) REFERENCES annotation_configs (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,429 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,432 INFO sqlalchemy.engine.Engine CREATE INDEX ix_project_annotation_configs_annotation_config_id ON project_annotation_configs (annotation_config_id)
+2026-08-28 15:27:09,432 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,433 INFO sqlalchemy.engine.Engine CREATE INDEX ix_project_annotation_configs_project_id ON project_annotation_configs (project_id)
+2026-08-28 15:27:09,433 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,435 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='2f9d1a65945f' WHERE alembic_version.version_num = 'bc8fea3c2bc8'
+2026-08-28 15:27:09,435 INFO sqlalchemy.engine.Engine [generated in 0.00005s] ()
+2026-08-28 15:27:09,436 INFO sqlalchemy.engine.Engine 
+CREATE TABLE project_trace_retention_policies (
+	id SERIAL NOT NULL, 
+	name VARCHAR NOT NULL, 
+	cron_expression VARCHAR NOT NULL, 
+	rule JSONB NOT NULL, 
+	CONSTRAINT pk_project_trace_retention_policies PRIMARY KEY (id)
+)
+
+
+2026-08-28 15:27:09,436 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,438 INFO sqlalchemy.engine.Engine ALTER TABLE projects ADD COLUMN trace_retention_policy_id INTEGER
+2026-08-28 15:27:09,438 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,439 INFO sqlalchemy.engine.Engine ALTER TABLE projects ADD CONSTRAINT fk_projects_trace_retention_policy_id_project_trace_ret_aa47 FOREIGN KEY(trace_retention_policy_id) REFERENCES project_trace_retention_policies (id) ON DELETE SET NULL
+2026-08-28 15:27:09,439 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,439 INFO sqlalchemy.engine.Engine CREATE INDEX ix_projects_trace_retention_policy_id ON projects (trace_retention_policy_id)
+2026-08-28 15:27:09,439 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,441 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='bb8139330879' WHERE alembic_version.version_num = '2f9d1a65945f'
+2026-08-28 15:27:09,441 INFO sqlalchemy.engine.Engine [generated in 0.00005s] ()
+2026-08-28 15:27:09,442 INFO sqlalchemy.engine.Engine ALTER TABLE prompt_versions ALTER COLUMN tools TYPE JSON USING tools::json
+2026-08-28 15:27:09,442 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,447 INFO sqlalchemy.engine.Engine ALTER TABLE prompt_versions ALTER COLUMN response_format TYPE JSON USING response_format::json
+2026-08-28 15:27:09,447 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,450 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='8a3764fe7f1a' WHERE alembic_version.version_num = 'bb8139330879'
+2026-08-28 15:27:09,450 INFO sqlalchemy.engine.Engine [generated in 0.00006s] ()
+2026-08-28 15:27:09,451 INFO sqlalchemy.engine.Engine ALTER TABLE users ADD COLUMN auth_method VARCHAR
+2026-08-28 15:27:09,451 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,462 INFO sqlalchemy.engine.Engine 
+            UPDATE users
+            SET auth_method = CASE
+            WHEN password_hash IS NOT NULL THEN 'LOCAL' ELSE 'OAUTH2' END
+        
+2026-08-28 15:27:09,462 INFO sqlalchemy.engine.Engine [generated in 0.00008s] ()
+2026-08-28 15:27:09,463 INFO sqlalchemy.engine.Engine ALTER TABLE users ALTER COLUMN auth_method SET NOT NULL
+2026-08-28 15:27:09,464 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,464 INFO sqlalchemy.engine.Engine ALTER TABLE users DROP CONSTRAINT "ck_users_`password_hash_and_salt`"
+2026-08-28 15:27:09,464 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,465 INFO sqlalchemy.engine.Engine ALTER TABLE users DROP CONSTRAINT "ck_users_`exactly_one_auth_method`"
+2026-08-28 15:27:09,465 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,466 INFO sqlalchemy.engine.Engine ALTER TABLE users DROP CONSTRAINT "ck_users_`oauth2_client_id_and_user_id`"
+2026-08-28 15:27:09,466 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,466 INFO sqlalchemy.engine.Engine 
+DROP INDEX ix_users_oauth2_client_id
+2026-08-28 15:27:09,466 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,467 INFO sqlalchemy.engine.Engine 
+DROP INDEX ix_users_oauth2_user_id
+2026-08-28 15:27:09,467 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,468 INFO sqlalchemy.engine.Engine ALTER TABLE users ADD CONSTRAINT "ck_users_`valid_auth_method`" CHECK (auth_method IN ('LOCAL', 'OAUTH2'))
+2026-08-28 15:27:09,468 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,468 INFO sqlalchemy.engine.Engine ALTER TABLE users ADD CONSTRAINT "ck_users_`local_auth_has_password_no_oauth`" CHECK (auth_method != 'LOCAL' OR (password_hash IS NOT NULL AND password_salt IS NOT NULL AND oauth2_client_id IS NULL AND oauth2_user_id IS NULL))
+2026-08-28 15:27:09,468 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,469 INFO sqlalchemy.engine.Engine ALTER TABLE users ADD CONSTRAINT "ck_users_`non_local_auth_has_no_password`" CHECK (auth_method = 'LOCAL' OR (password_hash IS NULL AND password_salt IS NULL))
+2026-08-28 15:27:09,469 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,470 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='6a88424799fe' WHERE alembic_version.version_num = '8a3764fe7f1a'
+2026-08-28 15:27:09,470 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,471 INFO sqlalchemy.engine.Engine 
+CREATE TABLE generative_models (
+	id BIGSERIAL NOT NULL, 
+	name VARCHAR NOT NULL, 
+	provider VARCHAR NOT NULL, 
+	name_pattern VARCHAR NOT NULL, 
+	is_built_in BOOLEAN NOT NULL, 
+	start_time TIMESTAMP WITH TIME ZONE, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	deleted_at TIMESTAMP WITH TIME ZONE, 
+	CONSTRAINT pk_generative_models PRIMARY KEY (id)
+)
+
+
+2026-08-28 15:27:09,471 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,474 INFO sqlalchemy.engine.Engine CREATE UNIQUE INDEX ix_generative_models_match_criteria ON generative_models (name_pattern, provider, is_built_in) WHERE deleted_at IS NULL
+2026-08-28 15:27:09,474 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,475 INFO sqlalchemy.engine.Engine CREATE UNIQUE INDEX ix_generative_models_name_is_built_in ON generative_models (name, is_built_in) WHERE deleted_at IS NULL
+2026-08-28 15:27:09,475 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,477 INFO sqlalchemy.engine.Engine 
+CREATE TABLE token_prices (
+	id BIGSERIAL NOT NULL, 
+	model_id BIGINT NOT NULL, 
+	token_type VARCHAR NOT NULL, 
+	is_prompt BOOLEAN NOT NULL, 
+	base_rate FLOAT NOT NULL, 
+	customization JSON, 
+	CONSTRAINT pk_token_prices PRIMARY KEY (id), 
+	CONSTRAINT uq_token_prices_model_id_token_type_is_prompt UNIQUE (model_id, token_type, is_prompt), 
+	CONSTRAINT fk_token_prices_model_id_generative_models FOREIGN KEY(model_id) REFERENCES generative_models (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,477 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,481 INFO sqlalchemy.engine.Engine CREATE INDEX ix_token_prices_model_id ON token_prices (model_id)
+2026-08-28 15:27:09,481 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,483 INFO sqlalchemy.engine.Engine 
+CREATE TABLE span_costs (
+	id BIGSERIAL NOT NULL, 
+	span_rowid BIGINT NOT NULL, 
+	trace_rowid BIGINT NOT NULL, 
+	model_id BIGINT, 
+	span_start_time TIMESTAMP WITH TIME ZONE NOT NULL, 
+	total_cost FLOAT, 
+	total_tokens FLOAT, 
+	prompt_cost FLOAT, 
+	prompt_tokens FLOAT, 
+	completion_cost FLOAT, 
+	completion_tokens FLOAT, 
+	CONSTRAINT pk_span_costs PRIMARY KEY (id), 
+	CONSTRAINT fk_span_costs_span_rowid_spans FOREIGN KEY(span_rowid) REFERENCES spans (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_span_costs_trace_rowid_traces FOREIGN KEY(trace_rowid) REFERENCES traces (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_span_costs_model_id_generative_models FOREIGN KEY(model_id) REFERENCES generative_models (id) ON DELETE RESTRICT
+)
+
+
+2026-08-28 15:27:09,483 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,485 INFO sqlalchemy.engine.Engine CREATE INDEX ix_span_costs_trace_rowid ON span_costs (trace_rowid)
+2026-08-28 15:27:09,485 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,486 INFO sqlalchemy.engine.Engine CREATE INDEX ix_span_costs_span_rowid ON span_costs (span_rowid)
+2026-08-28 15:27:09,486 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,487 INFO sqlalchemy.engine.Engine CREATE INDEX ix_span_costs_span_start_time ON span_costs (span_start_time)
+2026-08-28 15:27:09,487 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,488 INFO sqlalchemy.engine.Engine CREATE INDEX ix_span_costs_model_id_span_start_time ON span_costs (model_id, span_start_time)
+2026-08-28 15:27:09,488 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,490 INFO sqlalchemy.engine.Engine 
+CREATE TABLE span_cost_details (
+	id BIGSERIAL NOT NULL, 
+	span_cost_id BIGINT NOT NULL, 
+	token_type VARCHAR NOT NULL, 
+	is_prompt BOOLEAN NOT NULL, 
+	cost FLOAT, 
+	tokens FLOAT, 
+	cost_per_token FLOAT, 
+	CONSTRAINT pk_span_cost_details PRIMARY KEY (id), 
+	CONSTRAINT uq_span_cost_details_span_cost_id_token_type_is_prompt UNIQUE (span_cost_id, token_type, is_prompt), 
+	CONSTRAINT fk_span_cost_details_span_cost_id_span_costs FOREIGN KEY(span_cost_id) REFERENCES span_costs (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,490 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,494 INFO sqlalchemy.engine.Engine CREATE INDEX ix_span_cost_details_span_cost_id ON span_cost_details (span_cost_id)
+2026-08-28 15:27:09,494 INFO sqlalchemy.engine.Engine [no key 0.00010s] ()
+2026-08-28 15:27:09,495 INFO sqlalchemy.engine.Engine CREATE INDEX ix_span_cost_details_token_type ON span_cost_details (token_type)
+2026-08-28 15:27:09,495 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,496 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='a20694b15f82' WHERE alembic_version.version_num = '6a88424799fe'
+2026-08-28 15:27:09,497 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,497 INFO sqlalchemy.engine.Engine 
+DROP INDEX IF EXISTS ix_traces_project_rowid
+2026-08-28 15:27:09,497 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,498 INFO sqlalchemy.engine.Engine 
+DROP INDEX IF EXISTS ix_traces_start_time
+2026-08-28 15:27:09,498 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,499 INFO sqlalchemy.engine.Engine 
+DROP INDEX IF EXISTS ix_project_sessions_project_id
+2026-08-28 15:27:09,499 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,499 INFO sqlalchemy.engine.Engine 
+DROP INDEX IF EXISTS ix_project_sessions_start_time
+2026-08-28 15:27:09,499 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,500 INFO sqlalchemy.engine.Engine 
+DROP INDEX IF EXISTS ix_experiment_runs_experiment_id
+2026-08-28 15:27:09,500 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,501 INFO sqlalchemy.engine.Engine 
+DROP INDEX IF EXISTS ix_experiment_run_annotations_experiment_run_id
+2026-08-28 15:27:09,501 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,502 INFO sqlalchemy.engine.Engine 
+DROP INDEX IF EXISTS ix_dataset_example_revisions_dataset_example_id
+2026-08-28 15:27:09,502 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,503 INFO sqlalchemy.engine.Engine 
+DROP INDEX IF EXISTS ix_span_cost_details_span_cost_id
+2026-08-28 15:27:09,503 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,504 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='272b66ff50f8' WHERE alembic_version.version_num = 'a20694b15f82'
+2026-08-28 15:27:09,504 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,504 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_traces_project_rowid_start_time ON traces (project_rowid, start_time DESC)
+2026-08-28 15:27:09,505 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,506 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_project_sessions_project_id_start_time ON project_sessions (project_id, start_time DESC)
+2026-08-28 15:27:09,506 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,507 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='735d3d93c33e' WHERE alembic_version.version_num = '272b66ff50f8'
+2026-08-28 15:27:09,507 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,508 INFO sqlalchemy.engine.Engine 
+CREATE TABLE project_session_annotations (
+	id BIGSERIAL NOT NULL, 
+	project_session_id BIGINT NOT NULL, 
+	name VARCHAR NOT NULL, 
+	label VARCHAR, 
+	score FLOAT, 
+	explanation VARCHAR, 
+	metadata JSONB NOT NULL, 
+	annotator_kind VARCHAR NOT NULL CONSTRAINT "ck_project_session_annotations_`valid_annotator_kind`" CHECK (annotator_kind IN ('LLM', 'CODE', 'HUMAN')), 
+	user_id BIGINT, 
+	identifier VARCHAR DEFAULT '' NOT NULL, 
+	source VARCHAR NOT NULL CONSTRAINT "ck_project_session_annotations_`valid_source`" CHECK (source IN ('API', 'APP')), 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_project_session_annotations PRIMARY KEY (id), 
+	CONSTRAINT uq_project_session_annotations_name_project_session_id__6b58 UNIQUE (name, project_session_id, identifier), 
+	CONSTRAINT fk_project_session_annotations_project_session_id_proje_ea96 FOREIGN KEY(project_session_id) REFERENCES project_sessions (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_project_session_annotations_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL
+)
+
+
+2026-08-28 15:27:09,508 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,512 INFO sqlalchemy.engine.Engine CREATE INDEX ix_project_session_annotations_project_session_id ON project_session_annotations (project_session_id)
+2026-08-28 15:27:09,512 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,513 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='0df286449799' WHERE alembic_version.version_num = '735d3d93c33e'
+2026-08-28 15:27:09,513 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,514 INFO sqlalchemy.engine.Engine ALTER TABLE datasets ADD COLUMN user_id BIGINT
+2026-08-28 15:27:09,514 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,515 INFO sqlalchemy.engine.Engine ALTER TABLE datasets ADD CONSTRAINT fk_datasets_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL
+2026-08-28 15:27:09,515 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,516 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='01a8342c9cdf' WHERE alembic_version.version_num = '0df286449799'
+2026-08-28 15:27:09,516 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,516 INFO sqlalchemy.engine.Engine ALTER TABLE dataset_versions ADD COLUMN user_id BIGINT
+2026-08-28 15:27:09,516 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,517 INFO sqlalchemy.engine.Engine ALTER TABLE dataset_versions ADD CONSTRAINT fk_dataset_versions_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL
+2026-08-28 15:27:09,517 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,518 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='ab513d89518b' WHERE alembic_version.version_num = '01a8342c9cdf'
+2026-08-28 15:27:09,518 INFO sqlalchemy.engine.Engine [generated in 0.00006s] ()
+2026-08-28 15:27:09,519 INFO sqlalchemy.engine.Engine ALTER TABLE experiments ADD COLUMN user_id BIGINT
+2026-08-28 15:27:09,519 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,520 INFO sqlalchemy.engine.Engine ALTER TABLE experiments ADD CONSTRAINT fk_experiments_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL
+2026-08-28 15:27:09,520 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,521 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='d0690a79ea51' WHERE alembic_version.version_num = 'ab513d89518b'
+2026-08-28 15:27:09,521 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,522 INFO sqlalchemy.engine.Engine 
+CREATE TABLE experiment_tags (
+	id BIGSERIAL NOT NULL, 
+	experiment_id BIGINT NOT NULL, 
+	dataset_id BIGINT NOT NULL, 
+	user_id BIGINT, 
+	name VARCHAR NOT NULL, 
+	description VARCHAR, 
+	CONSTRAINT pk_experiment_tags PRIMARY KEY (id), 
+	CONSTRAINT uq_experiment_tags_dataset_id_name UNIQUE (dataset_id, name), 
+	CONSTRAINT fk_experiment_tags_experiment_id_experiments FOREIGN KEY(experiment_id) REFERENCES experiments (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_experiment_tags_dataset_id_datasets FOREIGN KEY(dataset_id) REFERENCES datasets (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_experiment_tags_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL
+)
+
+
+2026-08-28 15:27:09,522 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,525 INFO sqlalchemy.engine.Engine CREATE INDEX ix_experiment_tags_user_id ON experiment_tags (user_id)
+2026-08-28 15:27:09,525 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,538 INFO sqlalchemy.engine.Engine CREATE INDEX ix_experiment_tags_experiment_id ON experiment_tags (experiment_id)
+2026-08-28 15:27:09,538 INFO sqlalchemy.engine.Engine [no key 0.00006s] ()
+2026-08-28 15:27:09,539 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='699f655af132' WHERE alembic_version.version_num = 'd0690a79ea51'
+2026-08-28 15:27:09,539 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,540 INFO sqlalchemy.engine.Engine 
+CREATE TABLE dataset_labels (
+	id BIGSERIAL NOT NULL, 
+	name VARCHAR NOT NULL, 
+	description VARCHAR, 
+	color VARCHAR NOT NULL, 
+	user_id BIGINT, 
+	CONSTRAINT pk_dataset_labels PRIMARY KEY (id), 
+	CONSTRAINT uq_dataset_labels_name UNIQUE (name), 
+	CONSTRAINT fk_dataset_labels_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL
+)
+
+
+2026-08-28 15:27:09,540 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,543 INFO sqlalchemy.engine.Engine CREATE INDEX ix_dataset_labels_user_id ON dataset_labels (user_id)
+2026-08-28 15:27:09,543 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,544 INFO sqlalchemy.engine.Engine 
+CREATE TABLE datasets_dataset_labels (
+	dataset_id BIGINT NOT NULL, 
+	dataset_label_id BIGINT NOT NULL, 
+	CONSTRAINT pk_datasets_dataset_labels PRIMARY KEY (dataset_id, dataset_label_id), 
+	CONSTRAINT fk_datasets_dataset_labels_dataset_id_datasets FOREIGN KEY(dataset_id) REFERENCES datasets (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_datasets_dataset_labels_dataset_label_id_dataset_labels FOREIGN KEY(dataset_label_id) REFERENCES dataset_labels (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,545 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,546 INFO sqlalchemy.engine.Engine CREATE INDEX ix_datasets_dataset_labels_dataset_label_id ON datasets_dataset_labels (dataset_label_id)
+2026-08-28 15:27:09,546 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,547 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='58228d933c91' WHERE alembic_version.version_num = '699f655af132'
+2026-08-28 15:27:09,547 INFO sqlalchemy.engine.Engine [generated in 0.00005s] ()
+2026-08-28 15:27:09,548 INFO sqlalchemy.engine.Engine 
+CREATE TABLE experiments_dataset_examples (
+	experiment_id BIGINT NOT NULL, 
+	dataset_example_id BIGINT NOT NULL, 
+	dataset_example_revision_id BIGINT NOT NULL, 
+	CONSTRAINT pk_experiments_dataset_examples PRIMARY KEY (experiment_id, dataset_example_id), 
+	CONSTRAINT fk_experiments_dataset_examples_experiment_id_experiments FOREIGN KEY(experiment_id) REFERENCES experiments (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_experiments_dataset_examples_dataset_example_id_data_7c5c FOREIGN KEY(dataset_example_id) REFERENCES dataset_examples (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_experiments_dataset_examples_dataset_example_revisio_7f42 FOREIGN KEY(dataset_example_revision_id) REFERENCES dataset_example_revisions (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,548 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,550 INFO sqlalchemy.engine.Engine CREATE INDEX ix_experiments_dataset_examples_dataset_example_id ON experiments_dataset_examples (dataset_example_id)
+2026-08-28 15:27:09,550 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,551 INFO sqlalchemy.engine.Engine CREATE INDEX ix_experiments_dataset_examples_dataset_example_revision_id ON experiments_dataset_examples (dataset_example_revision_id)
+2026-08-28 15:27:09,551 INFO sqlalchemy.engine.Engine [no key 0.00006s] ()
+2026-08-28 15:27:09,553 INFO sqlalchemy.engine.Engine INSERT INTO experiments_dataset_examples (
+    experiment_id,
+    dataset_example_id,
+    dataset_example_revision_id
+)
+SELECT
+    ranked.experiment_id,
+    ranked.dataset_example_id,
+    ranked.dataset_example_revision_id
+FROM (
+    SELECT
+        e.id as experiment_id,
+        der.dataset_example_id,
+        der.id as dataset_example_revision_id,
+        der.revision_kind,
+        ROW_NUMBER() OVER (
+            PARTITION BY e.id, der.dataset_example_id
+            ORDER BY der.dataset_version_id DESC
+        ) as rn
+    FROM experiments e
+        JOIN dataset_examples de ON de.dataset_id = e.dataset_id
+        JOIN dataset_example_revisions der ON der.dataset_example_id = de.id
+    WHERE der.dataset_version_id <= e.dataset_version_id
+) ranked
+WHERE ranked.rn = 1
+    AND ranked.revision_kind != 'DELETE'
+
+2026-08-28 15:27:09,553 INFO sqlalchemy.engine.Engine [generated in 0.00005s] ()
+2026-08-28 15:27:09,554 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='e76cbd66ffc3' WHERE alembic_version.version_num = '58228d933c91'
+2026-08-28 15:27:09,554 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,555 INFO sqlalchemy.engine.Engine 
+CREATE TABLE dataset_splits (
+	id BIGSERIAL NOT NULL, 
+	user_id BIGINT, 
+	name VARCHAR NOT NULL, 
+	description VARCHAR, 
+	color VARCHAR NOT NULL, 
+	metadata JSONB NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_dataset_splits PRIMARY KEY (id), 
+	CONSTRAINT fk_dataset_splits_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL, 
+	CONSTRAINT uq_dataset_splits_name UNIQUE (name)
+)
+
+
+2026-08-28 15:27:09,555 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,559 INFO sqlalchemy.engine.Engine CREATE INDEX ix_dataset_splits_user_id ON dataset_splits (user_id)
+2026-08-28 15:27:09,559 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,561 INFO sqlalchemy.engine.Engine 
+CREATE TABLE dataset_splits_dataset_examples (
+	dataset_split_id BIGINT NOT NULL, 
+	dataset_example_id BIGINT NOT NULL, 
+	CONSTRAINT pk_dataset_splits_dataset_examples PRIMARY KEY (dataset_split_id, dataset_example_id), 
+	CONSTRAINT fk_dataset_splits_dataset_examples_dataset_split_id_dat_a90c FOREIGN KEY(dataset_split_id) REFERENCES dataset_splits (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_dataset_splits_dataset_examples_dataset_example_id_d_63b2 FOREIGN KEY(dataset_example_id) REFERENCES dataset_examples (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,561 INFO sqlalchemy.engine.Engine [no key 0.00008s] ()
+2026-08-28 15:27:09,562 INFO sqlalchemy.engine.Engine CREATE INDEX ix_dataset_splits_dataset_examples_dataset_example_id ON dataset_splits_dataset_examples (dataset_example_id)
+2026-08-28 15:27:09,562 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,564 INFO sqlalchemy.engine.Engine 
+CREATE TABLE experiments_dataset_splits (
+	experiment_id BIGINT NOT NULL, 
+	dataset_split_id BIGINT NOT NULL, 
+	CONSTRAINT pk_experiments_dataset_splits PRIMARY KEY (experiment_id, dataset_split_id), 
+	CONSTRAINT fk_experiments_dataset_splits_experiment_id_experiments FOREIGN KEY(experiment_id) REFERENCES experiments (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_experiments_dataset_splits_dataset_split_id_dataset_splits FOREIGN KEY(dataset_split_id) REFERENCES dataset_splits (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,564 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,565 INFO sqlalchemy.engine.Engine CREATE INDEX ix_experiments_dataset_splits_dataset_split_id ON experiments_dataset_splits (dataset_split_id)
+2026-08-28 15:27:09,565 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,566 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='deb2c81c0bb2' WHERE alembic_version.version_num = 'e76cbd66ffc3'
+2026-08-28 15:27:09,566 INFO sqlalchemy.engine.Engine [generated in 0.00005s] ()
+2026-08-28 15:27:09,567 INFO sqlalchemy.engine.Engine 
+CREATE TABLE secrets (
+	key VARCHAR NOT NULL, 
+	value BYTEA NOT NULL, 
+	user_id BIGINT, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_secrets PRIMARY KEY (key), 
+	CONSTRAINT fk_secrets_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL
+)
+
+
+2026-08-28 15:27:09,567 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,570 INFO sqlalchemy.engine.Engine 
+CREATE TABLE generative_model_custom_providers (
+	id BIGSERIAL NOT NULL, 
+	name VARCHAR NOT NULL, 
+	description VARCHAR, 
+	provider VARCHAR NOT NULL, 
+	sdk VARCHAR NOT NULL, 
+	config BYTEA NOT NULL, 
+	user_id BIGINT, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_generative_model_custom_providers PRIMARY KEY (id), 
+	CONSTRAINT uq_generative_model_custom_providers_name UNIQUE (name), 
+	CONSTRAINT fk_generative_model_custom_providers_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL
+)
+
+
+2026-08-28 15:27:09,570 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,574 INFO sqlalchemy.engine.Engine 
+CREATE TABLE evaluators (
+	id BIGSERIAL NOT NULL, 
+	name VARCHAR NOT NULL, 
+	description VARCHAR, 
+	metadata JSONB NOT NULL, 
+	kind VARCHAR NOT NULL CONSTRAINT "ck_evaluators_`valid_evaluator_kind`" CHECK (kind IN ('LLM', 'CODE', 'BUILTIN')), 
+	user_id BIGINT, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_evaluators PRIMARY KEY (id), 
+	CONSTRAINT uq_evaluators_kind_id UNIQUE (kind, id), 
+	CONSTRAINT uq_evaluators_name UNIQUE (name), 
+	CONSTRAINT fk_evaluators_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL
+)
+
+
+2026-08-28 15:27:09,574 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,579 INFO sqlalchemy.engine.Engine CREATE INDEX ix_evaluators_user_id ON evaluators (user_id)
+2026-08-28 15:27:09,579 INFO sqlalchemy.engine.Engine [no key 0.00006s] ()
+2026-08-28 15:27:09,582 INFO sqlalchemy.engine.Engine 
+CREATE TABLE llm_evaluators (
+	id BIGINT NOT NULL, 
+	kind VARCHAR DEFAULT 'LLM' NOT NULL CONSTRAINT "ck_llm_evaluators_`valid_evaluator_kind`" CHECK (kind = 'LLM'), 
+	prompt_id BIGINT NOT NULL, 
+	prompt_version_tag_id BIGINT, 
+	output_configs JSONB NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_llm_evaluators PRIMARY KEY (id), 
+	CONSTRAINT fk_llm_evaluators_kind_evaluators FOREIGN KEY(kind, id) REFERENCES evaluators (kind, id) ON DELETE CASCADE, 
+	CONSTRAINT fk_llm_evaluators_prompt_id_prompts FOREIGN KEY(prompt_id) REFERENCES prompts (id) ON DELETE RESTRICT, 
+	CONSTRAINT fk_llm_evaluators_prompt_version_tag_id_prompt_version_tags FOREIGN KEY(prompt_version_tag_id) REFERENCES prompt_version_tags (id) ON DELETE SET NULL
+)
+
+
+2026-08-28 15:27:09,582 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,584 INFO sqlalchemy.engine.Engine CREATE INDEX ix_llm_evaluators_prompt_id ON llm_evaluators (prompt_id)
+2026-08-28 15:27:09,584 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,586 INFO sqlalchemy.engine.Engine CREATE INDEX ix_llm_evaluators_prompt_version_tag_id ON llm_evaluators (prompt_version_tag_id)
+2026-08-28 15:27:09,586 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,587 INFO sqlalchemy.engine.Engine 
+CREATE TABLE code_evaluators (
+	id BIGINT NOT NULL, 
+	kind VARCHAR DEFAULT 'CODE' NOT NULL CONSTRAINT "ck_code_evaluators_`valid_evaluator_kind`" CHECK (kind = 'CODE'), 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_code_evaluators PRIMARY KEY (id), 
+	CONSTRAINT fk_code_evaluators_kind_evaluators FOREIGN KEY(kind, id) REFERENCES evaluators (kind, id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,587 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,591 INFO sqlalchemy.engine.Engine 
+CREATE TABLE dataset_evaluators (
+	id BIGSERIAL NOT NULL, 
+	dataset_id BIGINT NOT NULL, 
+	evaluator_id BIGINT NOT NULL, 
+	name VARCHAR NOT NULL, 
+	description VARCHAR, 
+	output_configs JSONB NOT NULL, 
+	input_mapping JSONB NOT NULL, 
+	user_id BIGINT, 
+	project_id BIGINT NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_dataset_evaluators PRIMARY KEY (id), 
+	CONSTRAINT uq_dataset_evaluators_dataset_id_name UNIQUE (dataset_id, name), 
+	CONSTRAINT fk_dataset_evaluators_dataset_id_datasets FOREIGN KEY(dataset_id) REFERENCES datasets (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_dataset_evaluators_evaluator_id_evaluators FOREIGN KEY(evaluator_id) REFERENCES evaluators (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_dataset_evaluators_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL, 
+	CONSTRAINT fk_dataset_evaluators_project_id_projects FOREIGN KEY(project_id) REFERENCES projects (id) ON DELETE RESTRICT
+)
+
+
+2026-08-28 15:27:09,591 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,595 INFO sqlalchemy.engine.Engine CREATE INDEX ix_dataset_evaluators_project_id ON dataset_evaluators (project_id)
+2026-08-28 15:27:09,595 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,596 INFO sqlalchemy.engine.Engine CREATE INDEX ix_dataset_evaluators_evaluator_id ON dataset_evaluators (evaluator_id)
+2026-08-28 15:27:09,596 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,597 INFO sqlalchemy.engine.Engine CREATE INDEX ix_dataset_evaluators_dataset_id ON dataset_evaluators (dataset_id)
+2026-08-28 15:27:09,597 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,600 INFO sqlalchemy.engine.Engine 
+CREATE TABLE builtin_evaluators (
+	id BIGINT NOT NULL, 
+	kind VARCHAR DEFAULT 'BUILTIN' NOT NULL CONSTRAINT "ck_builtin_evaluators_`valid_evaluator_kind`" CHECK (kind = 'BUILTIN'), 
+	key VARCHAR NOT NULL, 
+	input_schema JSONB NOT NULL, 
+	output_configs JSONB NOT NULL, 
+	synced_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_builtin_evaluators PRIMARY KEY (id), 
+	CONSTRAINT fk_builtin_evaluators_kind_evaluators FOREIGN KEY(kind, id) REFERENCES evaluators (kind, id) ON DELETE CASCADE, 
+	CONSTRAINT uq_builtin_evaluators_key UNIQUE (key)
+)
+
+
+2026-08-28 15:27:09,600 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,603 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='02463bd83119' WHERE alembic_version.version_num = 'deb2c81c0bb2'
+2026-08-28 15:27:09,603 INFO sqlalchemy.engine.Engine [generated in 0.00008s] ()
+2026-08-28 15:27:09,604 INFO sqlalchemy.engine.Engine ALTER TABLE prompt_versions ADD COLUMN custom_provider_id BIGINT
+2026-08-28 15:27:09,604 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,605 INFO sqlalchemy.engine.Engine ALTER TABLE prompt_versions ADD CONSTRAINT fk_prompt_versions_custom_provider_id_generative_model__f97f FOREIGN KEY(custom_provider_id) REFERENCES generative_model_custom_providers (id) ON DELETE SET NULL
+2026-08-28 15:27:09,605 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,606 INFO sqlalchemy.engine.Engine CREATE INDEX ix_prompt_versions_custom_provider_id ON prompt_versions (custom_provider_id)
+2026-08-28 15:27:09,606 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,607 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='3f53d82a1b7e' WHERE alembic_version.version_num = '02463bd83119'
+2026-08-28 15:27:09,607 INFO sqlalchemy.engine.Engine [generated in 0.00005s] ()
+2026-08-28 15:27:09,608 INFO sqlalchemy.engine.Engine ALTER TABLE users DROP CONSTRAINT "ck_users_`valid_auth_method`"
+2026-08-28 15:27:09,608 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,609 INFO sqlalchemy.engine.Engine ALTER TABLE users DROP CONSTRAINT "ck_users_`local_auth_has_password_no_oauth`"
+2026-08-28 15:27:09,609 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,610 INFO sqlalchemy.engine.Engine ALTER TABLE users DROP CONSTRAINT "ck_users_`non_local_auth_has_no_password`"
+2026-08-28 15:27:09,610 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,611 INFO sqlalchemy.engine.Engine ALTER TABLE users DROP CONSTRAINT uq_users_oauth2_client_id_oauth2_user_id
+2026-08-28 15:27:09,611 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,612 INFO sqlalchemy.engine.Engine ALTER TABLE users ADD COLUMN ldap_unique_id VARCHAR
+2026-08-28 15:27:09,612 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,612 INFO sqlalchemy.engine.Engine ALTER TABLE users ALTER COLUMN email DROP NOT NULL
+2026-08-28 15:27:09,612 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,613 INFO sqlalchemy.engine.Engine 
+            UPDATE users
+            SET auth_method = 'LDAP',
+                ldap_unique_id = oauth2_user_id,
+                oauth2_client_id = NULL,
+                oauth2_user_id = NULL
+            WHERE oauth2_client_id = 'LDAP(stopgap)'
+        
+2026-08-28 15:27:09,613 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,614 INFO sqlalchemy.engine.Engine 
+            UPDATE users
+            SET email = NULL
+            WHERE email LIKE 'NULL(stopgap)%'
+        
+2026-08-28 15:27:09,614 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,615 INFO sqlalchemy.engine.Engine ALTER TABLE users ADD CONSTRAINT "ck_users_`valid_auth_method`" CHECK (auth_method IN ('LOCAL', 'OAUTH2', 'LDAP'))
+2026-08-28 15:27:09,615 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,615 INFO sqlalchemy.engine.Engine ALTER TABLE users ADD CONSTRAINT "ck_users_`local_auth_has_password_no_oauth`" CHECK (auth_method != 'LOCAL' OR (password_hash IS NOT NULL AND password_salt IS NOT NULL AND oauth2_client_id IS NULL AND oauth2_user_id IS NULL AND ldap_unique_id IS NULL))
+2026-08-28 15:27:09,615 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,616 INFO sqlalchemy.engine.Engine ALTER TABLE users ADD CONSTRAINT "ck_users_`ldap_auth_valid`" CHECK (auth_method != 'LDAP' OR (oauth2_client_id IS NULL AND oauth2_user_id IS NULL AND (email IS NOT NULL OR ldap_unique_id IS NOT NULL)))
+2026-08-28 15:27:09,616 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,617 INFO sqlalchemy.engine.Engine ALTER TABLE users ADD CONSTRAINT "ck_users_`oauth2_auth_no_ldap_fields`" CHECK (auth_method != 'OAUTH2' OR ldap_unique_id IS NULL)
+2026-08-28 15:27:09,617 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,618 INFO sqlalchemy.engine.Engine ALTER TABLE users ADD CONSTRAINT "ck_users_`non_local_auth_has_no_password`" CHECK (auth_method = 'LOCAL' OR (password_hash IS NULL AND password_salt IS NULL))
+2026-08-28 15:27:09,618 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,618 INFO sqlalchemy.engine.Engine ALTER TABLE users ADD CONSTRAINT "ck_users_`non_ldap_auth_has_email`" CHECK (auth_method = 'LDAP' OR email IS NOT NULL)
+2026-08-28 15:27:09,618 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,620 INFO sqlalchemy.engine.Engine CREATE UNIQUE INDEX ix_users_oauth2_unique ON users (oauth2_client_id, oauth2_user_id) WHERE auth_method = 'OAUTH2'
+2026-08-28 15:27:09,620 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,635 INFO sqlalchemy.engine.Engine CREATE UNIQUE INDEX ix_users_ldap_unique_id ON users (ldap_unique_id) WHERE auth_method = 'LDAP' AND ldap_unique_id IS NOT NULL
+2026-08-28 15:27:09,635 INFO sqlalchemy.engine.Engine [no key 0.00006s] ()
+2026-08-28 15:27:09,637 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='a1b2c3d4e5f6' WHERE alembic_version.version_num = '3f53d82a1b7e'
+2026-08-28 15:27:09,637 INFO sqlalchemy.engine.Engine [generated in 0.00007s] ()
+2026-08-28 15:27:09,638 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_spans_session_id ON spans ((CAST(attributes #>> '{session, id}' AS VARCHAR))) WHERE CAST((attributes #>> '{session, id}') AS VARCHAR) IS NOT NULL
+2026-08-28 15:27:09,638 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,639 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='f1a6b2f0c9d5' WHERE alembic_version.version_num = 'a1b2c3d4e5f6'
+2026-08-28 15:27:09,639 INFO sqlalchemy.engine.Engine [generated in 0.00005s] ()
+2026-08-28 15:27:09,640 INFO sqlalchemy.engine.Engine ALTER TABLE experiments ADD COLUMN is_ephemeral BOOLEAN DEFAULT false NOT NULL
+2026-08-28 15:27:09,640 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,641 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_experiments_ephemeral_updated_at ON experiments (updated_at) WHERE is_ephemeral IS TRUE
+2026-08-28 15:27:09,641 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,642 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='9c5c1f6bd0d2' WHERE alembic_version.version_num = 'f1a6b2f0c9d5'
+2026-08-28 15:27:09,642 INFO sqlalchemy.engine.Engine [generated in 0.00005s] ()
+2026-08-28 15:27:09,644 INFO sqlalchemy.engine.Engine 
+CREATE TABLE experiment_jobs (
+	id BIGINT NOT NULL, 
+	type VARCHAR NOT NULL CONSTRAINT "ck_experiment_jobs_`valid_type`" CHECK (type IN ('PROMPT', 'EVAL_ONLY')), 
+	status VARCHAR DEFAULT 'STOPPED' NOT NULL CONSTRAINT "ck_experiment_jobs_`valid_experiment_status`" CHECK (status IN ('RUNNING', 'COMPLETED', 'STOPPED', 'ERROR')), 
+	claimed_at TIMESTAMP WITH TIME ZONE, 
+	claimed_by VARCHAR, 
+	cooldown_until TIMESTAMP WITH TIME ZONE, 
+	max_concurrency INTEGER DEFAULT '10' NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_experiment_jobs PRIMARY KEY (id), 
+	CONSTRAINT uq_experiment_jobs_type_id UNIQUE (type, id), 
+	CONSTRAINT fk_experiment_jobs_id_experiments FOREIGN KEY(id) REFERENCES experiments (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,644 INFO sqlalchemy.engine.Engine [no key 0.00006s] ()
+2026-08-28 15:27:09,647 INFO sqlalchemy.engine.Engine 
+CREATE TABLE experiment_prompt_tasks (
+	id BIGINT NOT NULL, 
+	type VARCHAR DEFAULT 'PROMPT' NOT NULL CONSTRAINT "ck_experiment_prompt_tasks_`valid_type`" CHECK (type = 'PROMPT'), 
+	prompt_version_id BIGINT, 
+	model_provider VARCHAR NOT NULL, 
+	model_name VARCHAR NOT NULL, 
+	custom_provider_id BIGINT, 
+	template_type VARCHAR NOT NULL, 
+	template_format VARCHAR NOT NULL, 
+	template JSONB NOT NULL, 
+	tools JSONB, 
+	response_format JSONB, 
+	invocation_parameters JSONB DEFAULT '{}' NOT NULL, 
+	connection JSONB, 
+	playground_config JSONB, 
+	stream_model_output BOOLEAN DEFAULT '1' NOT NULL, 
+	CONSTRAINT pk_experiment_prompt_tasks PRIMARY KEY (id), 
+	CONSTRAINT fk_experiment_prompt_tasks_type_experiment_jobs FOREIGN KEY(type, id) REFERENCES experiment_jobs (type, id) ON DELETE CASCADE, 
+	CONSTRAINT "ck_experiment_prompt_tasks_`custom_provider_or_connection`" CHECK (NOT (custom_provider_id IS NOT NULL AND connection IS NOT NULL)), 
+	CONSTRAINT fk_experiment_prompt_tasks_prompt_version_id_prompt_versions FOREIGN KEY(prompt_version_id) REFERENCES prompt_versions (id) ON DELETE SET NULL, 
+	CONSTRAINT fk_experiment_prompt_tasks_custom_provider_id_generativ_44e2 FOREIGN KEY(custom_provider_id) REFERENCES generative_model_custom_providers (id) ON DELETE SET NULL
+)
+
+
+2026-08-28 15:27:09,647 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,650 INFO sqlalchemy.engine.Engine 
+CREATE TABLE experiment_logs (
+	id BIGSERIAL NOT NULL, 
+	experiment_id BIGINT NOT NULL, 
+	occurred_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	category VARCHAR NOT NULL CONSTRAINT "ck_experiment_logs_`valid_event_category`" CHECK (category IN ('TASK', 'EVAL', 'EXPERIMENT')), 
+	level VARCHAR NOT NULL CONSTRAINT "ck_experiment_logs_`valid_event_level`" CHECK (level IN ('ERROR', 'WARN', 'INFO')), 
+	message VARCHAR NOT NULL, 
+	detail JSONB, 
+	CONSTRAINT pk_experiment_logs PRIMARY KEY (id), 
+	CONSTRAINT uq_experiment_logs_category_id UNIQUE (category, id), 
+	CONSTRAINT fk_experiment_logs_experiment_id_experiment_jobs FOREIGN KEY(experiment_id) REFERENCES experiment_jobs (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,650 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,653 INFO sqlalchemy.engine.Engine CREATE INDEX ix_experiment_logs_experiment_id_occurred_at_errors ON experiment_logs (experiment_id, occurred_at DESC) WHERE level = 'ERROR'
+2026-08-28 15:27:09,653 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,655 INFO sqlalchemy.engine.Engine 
+CREATE TABLE experiment_task_logs (
+	id BIGINT NOT NULL, 
+	category VARCHAR DEFAULT 'TASK' NOT NULL CONSTRAINT "ck_experiment_task_logs_`valid_category`" CHECK (category = 'TASK'), 
+	dataset_example_id BIGINT NOT NULL, 
+	repetition_number INTEGER NOT NULL, 
+	CONSTRAINT pk_experiment_task_logs PRIMARY KEY (id), 
+	CONSTRAINT fk_experiment_task_logs_category_experiment_logs FOREIGN KEY(category, id) REFERENCES experiment_logs (category, id) ON DELETE CASCADE, 
+	CONSTRAINT fk_experiment_task_logs_dataset_example_id_dataset_examples FOREIGN KEY(dataset_example_id) REFERENCES dataset_examples (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,655 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,658 INFO sqlalchemy.engine.Engine 
+CREATE TABLE experiment_eval_logs (
+	id BIGINT NOT NULL, 
+	category VARCHAR DEFAULT 'EVAL' NOT NULL CONSTRAINT "ck_experiment_eval_logs_`valid_category`" CHECK (category = 'EVAL'), 
+	experiment_run_id BIGINT NOT NULL, 
+	dataset_evaluator_id BIGINT NOT NULL, 
+	CONSTRAINT pk_experiment_eval_logs PRIMARY KEY (id), 
+	CONSTRAINT fk_experiment_eval_logs_category_experiment_logs FOREIGN KEY(category, id) REFERENCES experiment_logs (category, id) ON DELETE CASCADE, 
+	CONSTRAINT fk_experiment_eval_logs_experiment_run_id_experiment_runs FOREIGN KEY(experiment_run_id) REFERENCES experiment_runs (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_experiment_eval_logs_dataset_evaluator_id_dataset_evaluators FOREIGN KEY(dataset_evaluator_id) REFERENCES dataset_evaluators (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,658 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,660 INFO sqlalchemy.engine.Engine 
+CREATE TABLE experiment_dataset_evaluators (
+	experiment_id BIGINT NOT NULL, 
+	dataset_evaluator_id BIGINT NOT NULL, 
+	CONSTRAINT pk_experiment_dataset_evaluators PRIMARY KEY (experiment_id, dataset_evaluator_id), 
+	CONSTRAINT fk_experiment_dataset_evaluators_experiment_id_experiment_jobs FOREIGN KEY(experiment_id) REFERENCES experiment_jobs (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_experiment_dataset_evaluators_dataset_evaluator_id_d_138b FOREIGN KEY(dataset_evaluator_id) REFERENCES dataset_evaluators (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,660 INFO sqlalchemy.engine.Engine [no key 0.00006s] ()
+2026-08-28 15:27:09,662 INFO sqlalchemy.engine.Engine CREATE INDEX ix_experiment_dataset_evaluators_dataset_evaluator_id ON experiment_dataset_evaluators (dataset_evaluator_id)
+2026-08-28 15:27:09,662 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,663 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='aba52fffe1a1' WHERE alembic_version.version_num = '9c5c1f6bd0d2'
+2026-08-28 15:27:09,663 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,664 INFO sqlalchemy.engine.Engine ALTER TABLE dataset_examples ADD COLUMN external_id VARCHAR
+2026-08-28 15:27:09,664 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,666 INFO sqlalchemy.engine.Engine CREATE INDEX ix_dataset_examples_external_id ON dataset_examples (external_id)
+2026-08-28 15:27:09,666 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,667 INFO sqlalchemy.engine.Engine ALTER TABLE dataset_examples ADD CONSTRAINT uq_dataset_examples_dataset_id_external_id UNIQUE (dataset_id, external_id)
+2026-08-28 15:27:09,667 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,668 INFO sqlalchemy.engine.Engine ALTER TABLE dataset_example_revisions ADD COLUMN content_hash BYTEA
+2026-08-28 15:27:09,668 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,669 INFO sqlalchemy.engine.Engine CREATE INDEX ix_dataset_example_revisions_content_hash ON dataset_example_revisions (content_hash)
+2026-08-28 15:27:09,669 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,671 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='575aa27302ee' WHERE alembic_version.version_num = 'aba52fffe1a1'
+2026-08-28 15:27:09,671 INFO sqlalchemy.engine.Engine [generated in 0.00005s] ()
+2026-08-28 15:27:09,672 INFO sqlalchemy.engine.Engine 
+CREATE TABLE languages (
+	name VARCHAR NOT NULL, 
+	CONSTRAINT pk_languages PRIMARY KEY (name)
+)
+
+
+2026-08-28 15:27:09,672 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,674 INFO sqlalchemy.engine.Engine INSERT INTO languages (name) VALUES ('PYTHON'), ('TYPESCRIPT')
+2026-08-28 15:27:09,674 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,675 INFO sqlalchemy.engine.Engine 
+CREATE TABLE sandbox_providers (
+	backend_type VARCHAR NOT NULL, 
+	enabled BOOLEAN NOT NULL, 
+	config JSONB DEFAULT '{}' NOT NULL, 
+	user_id BIGINT, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_sandbox_providers PRIMARY KEY (backend_type), 
+	CONSTRAINT fk_sandbox_providers_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL
+)
+
+
+2026-08-28 15:27:09,675 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,677 INFO sqlalchemy.engine.Engine CREATE INDEX ix_sandbox_providers_user_id ON sandbox_providers (user_id)
+2026-08-28 15:27:09,677 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,679 INFO sqlalchemy.engine.Engine 
+CREATE TABLE sandbox_configs (
+	id BIGSERIAL NOT NULL, 
+	backend_type VARCHAR NOT NULL, 
+	language VARCHAR NOT NULL, 
+	name VARCHAR NOT NULL, 
+	description VARCHAR, 
+	config JSONB DEFAULT '{}' NOT NULL, 
+	timeout INTEGER NOT NULL, 
+	enabled BOOLEAN DEFAULT true NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	user_id BIGINT, 
+	CONSTRAINT pk_sandbox_configs PRIMARY KEY (id), 
+	CONSTRAINT uq_sandbox_configs_backend_type_name UNIQUE (backend_type, name), 
+	CONSTRAINT uq_sandbox_configs_language_id UNIQUE (language, id), 
+	CONSTRAINT fk_sandbox_configs_backend_type_sandbox_providers FOREIGN KEY(backend_type) REFERENCES sandbox_providers (backend_type) ON DELETE RESTRICT, 
+	CONSTRAINT fk_sandbox_configs_language_languages FOREIGN KEY(language) REFERENCES languages (name) ON DELETE RESTRICT, 
+	CONSTRAINT fk_sandbox_configs_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL
+)
+
+
+2026-08-28 15:27:09,679 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,685 INFO sqlalchemy.engine.Engine CREATE INDEX ix_sandbox_configs_user_id ON sandbox_configs (user_id)
+2026-08-28 15:27:09,685 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,687 INFO sqlalchemy.engine.Engine ALTER TABLE code_evaluators ADD COLUMN language VARCHAR DEFAULT 'PYTHON' NOT NULL
+2026-08-28 15:27:09,687 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,687 INFO sqlalchemy.engine.Engine ALTER TABLE code_evaluators ADD CONSTRAINT fk_code_evaluators_language_languages FOREIGN KEY(language) REFERENCES languages (name) ON DELETE RESTRICT
+2026-08-28 15:27:09,687 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,688 INFO sqlalchemy.engine.Engine ALTER TABLE code_evaluators ADD COLUMN input_mapping JSONB DEFAULT '{"literal_mapping": {}, "path_mapping": {}}' NOT NULL
+2026-08-28 15:27:09,688 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,689 INFO sqlalchemy.engine.Engine ALTER TABLE code_evaluators ADD COLUMN output_configs JSONB DEFAULT '[]' NOT NULL
+2026-08-28 15:27:09,689 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,689 INFO sqlalchemy.engine.Engine ALTER TABLE code_evaluators ADD COLUMN sandbox_config_id BIGINT
+2026-08-28 15:27:09,689 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,690 INFO sqlalchemy.engine.Engine ALTER TABLE code_evaluators ADD CONSTRAINT fk_code_evaluators_sandbox_config_id_sandbox_configs FOREIGN KEY(sandbox_config_id) REFERENCES sandbox_configs (id) ON DELETE SET NULL
+2026-08-28 15:27:09,690 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,691 INFO sqlalchemy.engine.Engine ALTER TABLE code_evaluators ALTER COLUMN language DROP DEFAULT
+2026-08-28 15:27:09,691 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,691 INFO sqlalchemy.engine.Engine CREATE INDEX ix_code_evaluators_language ON code_evaluators (language)
+2026-08-28 15:27:09,691 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,692 INFO sqlalchemy.engine.Engine CREATE INDEX ix_code_evaluators_sandbox_config_id ON code_evaluators (sandbox_config_id)
+2026-08-28 15:27:09,693 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,694 INFO sqlalchemy.engine.Engine ALTER TABLE code_evaluators ADD CONSTRAINT fk_code_evaluators_sandbox_config_language FOREIGN KEY(sandbox_config_id, language) REFERENCES sandbox_configs (id, language)
+2026-08-28 15:27:09,694 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,696 INFO sqlalchemy.engine.Engine 
+CREATE TABLE code_evaluator_code_versions (
+	id BIGSERIAL NOT NULL, 
+	code_evaluator_id BIGINT NOT NULL, 
+	user_id BIGINT, 
+	source_code VARCHAR DEFAULT '' NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_code_evaluator_code_versions PRIMARY KEY (id), 
+	CONSTRAINT fk_code_evaluator_code_versions_code_evaluator_id_code__3f57 FOREIGN KEY(code_evaluator_id) REFERENCES code_evaluators (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_code_evaluator_code_versions_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL
+)
+
+
+2026-08-28 15:27:09,696 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,698 INFO sqlalchemy.engine.Engine CREATE INDEX ix_code_evaluator_code_versions_user_id ON code_evaluator_code_versions (user_id)
+2026-08-28 15:27:09,698 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,699 INFO sqlalchemy.engine.Engine CREATE INDEX ix_code_evaluator_code_versions_code_evaluator_id_id ON code_evaluator_code_versions (code_evaluator_id, id)
+2026-08-28 15:27:09,699 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,700 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='0ff41b5b118f' WHERE alembic_version.version_num = '575aa27302ee'
+2026-08-28 15:27:09,700 INFO sqlalchemy.engine.Engine [generated in 0.00005s] ()
+2026-08-28 15:27:09,702 INFO sqlalchemy.engine.Engine 
+CREATE TABLE system_settings (
+	key VARCHAR NOT NULL, 
+	value JSONB NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_by BIGINT, 
+	CONSTRAINT pk_system_settings PRIMARY KEY (key), 
+	CONSTRAINT fk_system_settings_updated_by_users FOREIGN KEY(updated_by) REFERENCES users (id) ON DELETE SET NULL
+)
+
+
+2026-08-28 15:27:09,702 INFO sqlalchemy.engine.Engine [no key 0.00007s] ()
+2026-08-28 15:27:09,704 INFO sqlalchemy.engine.Engine CREATE INDEX ix_system_settings_updated_at ON system_settings (updated_at)
+2026-08-28 15:27:09,704 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,705 INFO sqlalchemy.engine.Engine CREATE INDEX ix_generative_models_updated_at ON generative_models (updated_at)
+2026-08-28 15:27:09,705 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,706 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='d4e5f6a7b8c9' WHERE alembic_version.version_num = '0ff41b5b118f'
+2026-08-28 15:27:09,706 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,707 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_project_sessions_project_id_end_time ON project_sessions (project_id, end_time DESC)
+2026-08-28 15:27:09,707 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,708 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_experiment_logs_experiment_id ON experiment_logs (experiment_id)
+2026-08-28 15:27:09,708 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,710 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_experiment_eval_logs_experiment_run_id ON experiment_eval_logs (experiment_run_id)
+2026-08-28 15:27:09,710 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,711 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_experiment_eval_logs_dataset_evaluator_id ON experiment_eval_logs (dataset_evaluator_id)
+2026-08-28 15:27:09,712 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,713 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_experiment_task_logs_dataset_example_id ON experiment_task_logs (dataset_example_id)
+2026-08-28 15:27:09,713 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,725 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_span_annotations_user_id ON span_annotations (user_id)
+2026-08-28 15:27:09,725 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,726 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_trace_annotations_user_id ON trace_annotations (user_id)
+2026-08-28 15:27:09,726 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,728 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_document_annotations_user_id ON document_annotations (user_id)
+2026-08-28 15:27:09,728 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,729 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_project_session_annotations_user_id ON project_session_annotations (user_id)
+2026-08-28 15:27:09,729 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,730 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_datasets_user_id ON datasets (user_id)
+2026-08-28 15:27:09,730 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,731 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_dataset_versions_user_id ON dataset_versions (user_id)
+2026-08-28 15:27:09,731 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,732 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_experiments_user_id ON experiments (user_id)
+2026-08-28 15:27:09,732 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,734 INFO sqlalchemy.engine.Engine SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)
+2026-08-28 15:27:09,734 INFO sqlalchemy.engine.Engine [generated in 0.00005s] ('ix_project_sessions_project_id_end_time',)
+2026-08-28 15:27:09,734 INFO sqlalchemy.engine.Engine SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)
+2026-08-28 15:27:09,734 INFO sqlalchemy.engine.Engine [cached since 0.000865s ago] ('ix_experiment_logs_experiment_id',)
+2026-08-28 15:27:09,735 INFO sqlalchemy.engine.Engine SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)
+2026-08-28 15:27:09,735 INFO sqlalchemy.engine.Engine [cached since 0.001228s ago] ('ix_experiment_eval_logs_experiment_run_id',)
+2026-08-28 15:27:09,735 INFO sqlalchemy.engine.Engine SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)
+2026-08-28 15:27:09,735 INFO sqlalchemy.engine.Engine [cached since 0.001691s ago] ('ix_experiment_eval_logs_dataset_evaluator_id',)
+2026-08-28 15:27:09,736 INFO sqlalchemy.engine.Engine SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)
+2026-08-28 15:27:09,736 INFO sqlalchemy.engine.Engine [cached since 0.002053s ago] ('ix_experiment_task_logs_dataset_example_id',)
+2026-08-28 15:27:09,736 INFO sqlalchemy.engine.Engine SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)
+2026-08-28 15:27:09,736 INFO sqlalchemy.engine.Engine [cached since 0.002387s ago] ('ix_span_annotations_user_id',)
+2026-08-28 15:27:09,736 INFO sqlalchemy.engine.Engine SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)
+2026-08-28 15:27:09,736 INFO sqlalchemy.engine.Engine [cached since 0.002754s ago] ('ix_trace_annotations_user_id',)
+2026-08-28 15:27:09,737 INFO sqlalchemy.engine.Engine SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)
+2026-08-28 15:27:09,737 INFO sqlalchemy.engine.Engine [cached since 0.003066s ago] ('ix_document_annotations_user_id',)
+2026-08-28 15:27:09,737 INFO sqlalchemy.engine.Engine SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)
+2026-08-28 15:27:09,737 INFO sqlalchemy.engine.Engine [cached since 0.003357s ago] ('ix_project_session_annotations_user_id',)
+2026-08-28 15:27:09,737 INFO sqlalchemy.engine.Engine SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)
+2026-08-28 15:27:09,737 INFO sqlalchemy.engine.Engine [cached since 0.00364s ago] ('ix_datasets_user_id',)
+2026-08-28 15:27:09,738 INFO sqlalchemy.engine.Engine SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)
+2026-08-28 15:27:09,738 INFO sqlalchemy.engine.Engine [cached since 0.004032s ago] ('ix_dataset_versions_user_id',)
+2026-08-28 15:27:09,738 INFO sqlalchemy.engine.Engine SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)
+2026-08-28 15:27:09,738 INFO sqlalchemy.engine.Engine [cached since 0.004358s ago] ('ix_experiments_user_id',)
+2026-08-28 15:27:09,738 INFO sqlalchemy.engine.Engine 
+DROP INDEX IF EXISTS ix_project_annotation_configs_project_id
+2026-08-28 15:27:09,738 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,739 INFO sqlalchemy.engine.Engine 
+DROP INDEX IF EXISTS ix_prompts_prompt_labels_prompt_label_id
+2026-08-28 15:27:09,739 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,740 INFO sqlalchemy.engine.Engine 
+DROP INDEX IF EXISTS ix_token_prices_model_id
+2026-08-28 15:27:09,740 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,740 INFO sqlalchemy.engine.Engine 
+DROP INDEX IF EXISTS ix_dataset_examples_dataset_id
+2026-08-28 15:27:09,740 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,741 INFO sqlalchemy.engine.Engine 
+DROP INDEX IF EXISTS ix_dataset_examples_external_id
+2026-08-28 15:27:09,741 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,742 INFO sqlalchemy.engine.Engine 
+DROP INDEX IF EXISTS ix_dataset_evaluators_dataset_id
+2026-08-28 15:27:09,742 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,742 INFO sqlalchemy.engine.Engine 
+DROP INDEX IF EXISTS ix_project_sessions_end_time
+2026-08-28 15:27:09,742 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,743 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='eaf1907ae453' WHERE alembic_version.version_num = 'd4e5f6a7b8c9'
+2026-08-28 15:27:09,743 INFO sqlalchemy.engine.Engine [generated in 0.00007s] ()
+2026-08-28 15:27:09,744 INFO sqlalchemy.engine.Engine 
+CREATE TABLE oauth2_clients (
+	id BIGSERIAL NOT NULL, 
+	client_id VARCHAR NOT NULL, 
+	name VARCHAR NOT NULL, 
+	logo_uri VARCHAR, 
+	redirect_uris JSONB NOT NULL, 
+	grant_types JSONB NOT NULL, 
+	token_endpoint_auth_method VARCHAR NOT NULL, 
+	is_first_party BOOLEAN DEFAULT false NOT NULL, 
+	metadata JSONB, 
+	registration_client_ip VARCHAR, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_oauth2_clients PRIMARY KEY (id)
+)
+
+
+2026-08-28 15:27:09,745 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,747 INFO sqlalchemy.engine.Engine CREATE UNIQUE INDEX ix_oauth2_clients_client_id ON oauth2_clients (client_id)
+2026-08-28 15:27:09,747 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,748 INFO sqlalchemy.engine.Engine CREATE INDEX ix_oauth2_clients_registration_client_ip ON oauth2_clients (registration_client_ip, created_at)
+2026-08-28 15:27:09,748 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,750 INFO sqlalchemy.engine.Engine 
+CREATE TABLE oauth2_grants (
+	id BIGSERIAL NOT NULL, 
+	user_id BIGINT NOT NULL, 
+	oauth2_client_id BIGINT NOT NULL, 
+	scopes JSONB, 
+	audience JSONB, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	expires_at TIMESTAMP WITH TIME ZONE, 
+	last_used_at TIMESTAMP WITH TIME ZONE, 
+	revoked_at TIMESTAMP WITH TIME ZONE, 
+	CONSTRAINT pk_oauth2_grants PRIMARY KEY (id), 
+	CONSTRAINT fk_oauth2_grants_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_oauth2_grants_oauth2_client_id_oauth2_clients FOREIGN KEY(oauth2_client_id) REFERENCES oauth2_clients (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,750 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,753 INFO sqlalchemy.engine.Engine CREATE INDEX ix_oauth2_grants_user_id ON oauth2_grants (user_id)
+2026-08-28 15:27:09,753 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-08-28 15:27:09,754 INFO sqlalchemy.engine.Engine CREATE INDEX ix_oauth2_grants_oauth2_client_id ON oauth2_grants (oauth2_client_id)
+2026-08-28 15:27:09,754 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,756 INFO sqlalchemy.engine.Engine 
+CREATE TABLE oauth2_authorization_codes (
+	id BIGSERIAL NOT NULL, 
+	code_hash VARCHAR NOT NULL, 
+	user_id BIGINT NOT NULL, 
+	oauth2_client_id BIGINT NOT NULL, 
+	redirect_uri VARCHAR NOT NULL, 
+	code_challenge VARCHAR NOT NULL, 
+	code_challenge_method VARCHAR NOT NULL, 
+	scopes JSONB, 
+	resource VARCHAR, 
+	audience JSONB, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	expires_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	CONSTRAINT pk_oauth2_authorization_codes PRIMARY KEY (id), 
+	CONSTRAINT fk_oauth2_authorization_codes_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_oauth2_authorization_codes_oauth2_client_id_oauth2_clients FOREIGN KEY(oauth2_client_id) REFERENCES oauth2_clients (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,756 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,758 INFO sqlalchemy.engine.Engine CREATE UNIQUE INDEX ix_oauth2_authorization_codes_code_hash ON oauth2_authorization_codes (code_hash)
+2026-08-28 15:27:09,758 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,759 INFO sqlalchemy.engine.Engine CREATE INDEX ix_oauth2_authorization_codes_expires_at ON oauth2_authorization_codes (expires_at)
+2026-08-28 15:27:09,759 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,760 INFO sqlalchemy.engine.Engine DELETE FROM access_tokens WHERE user_id IS NULL OR refresh_token_id IS NULL
+2026-08-28 15:27:09,760 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,761 INFO sqlalchemy.engine.Engine DELETE FROM refresh_tokens WHERE user_id IS NULL
+2026-08-28 15:27:09,761 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,763 INFO sqlalchemy.engine.Engine ALTER TABLE refresh_tokens ADD COLUMN oauth2_grant_id BIGINT
+2026-08-28 15:27:09,763 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,763 INFO sqlalchemy.engine.Engine ALTER TABLE refresh_tokens ADD CONSTRAINT fk_refresh_tokens_oauth2_grant_id_oauth2_grants FOREIGN KEY(oauth2_grant_id) REFERENCES oauth2_grants (id) ON DELETE CASCADE
+2026-08-28 15:27:09,763 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,764 INFO sqlalchemy.engine.Engine ALTER TABLE refresh_tokens ADD COLUMN scopes JSONB
+2026-08-28 15:27:09,764 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,765 INFO sqlalchemy.engine.Engine ALTER TABLE refresh_tokens ADD COLUMN audience JSONB
+2026-08-28 15:27:09,765 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,766 INFO sqlalchemy.engine.Engine ALTER TABLE refresh_tokens ADD COLUMN consumed_at TIMESTAMP WITH TIME ZONE
+2026-08-28 15:27:09,766 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,766 INFO sqlalchemy.engine.Engine ALTER TABLE refresh_tokens ALTER COLUMN user_id SET NOT NULL
+2026-08-28 15:27:09,766 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,767 INFO sqlalchemy.engine.Engine CREATE INDEX ix_refresh_tokens_oauth2_grant_id ON refresh_tokens (oauth2_grant_id)
+2026-08-28 15:27:09,767 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,768 INFO sqlalchemy.engine.Engine ALTER TABLE access_tokens ADD COLUMN scopes JSONB
+2026-08-28 15:27:09,768 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-08-28 15:27:09,770 INFO sqlalchemy.engine.Engine ALTER TABLE access_tokens ADD COLUMN audience JSONB
+2026-08-28 15:27:09,770 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,770 INFO sqlalchemy.engine.Engine ALTER TABLE access_tokens ALTER COLUMN user_id SET NOT NULL
+2026-08-28 15:27:09,770 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,771 INFO sqlalchemy.engine.Engine ALTER TABLE access_tokens ALTER COLUMN refresh_token_id SET NOT NULL
+2026-08-28 15:27:09,771 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,771 INFO sqlalchemy.engine.Engine ALTER TABLE api_keys ADD COLUMN scopes JSONB
+2026-08-28 15:27:09,771 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,772 INFO sqlalchemy.engine.Engine ALTER TABLE api_keys ADD COLUMN audience JSONB
+2026-08-28 15:27:09,772 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,772 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='132d988c5bef' WHERE alembic_version.version_num = 'eaf1907ae453'
+2026-08-28 15:27:09,772 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,773 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_spans_user_id ON spans ((CAST(attributes #>> '{user, id}' AS VARCHAR))) WHERE CAST((attributes #>> '{user, id}') AS VARCHAR) IS NOT NULL
+2026-08-28 15:27:09,773 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,775 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='c9d0e1f2a3b4' WHERE alembic_version.version_num = '132d988c5bef'
+2026-08-28 15:27:09,775 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,776 INFO sqlalchemy.engine.Engine 
+CREATE TABLE agent_sessions (
+	id BIGSERIAL NOT NULL, 
+	project_name VARCHAR NOT NULL, 
+	user_id BIGINT, 
+	title VARCHAR NOT NULL, 
+	model_provider VARCHAR NOT NULL, 
+	model_name VARCHAR NOT NULL, 
+	custom_provider_id BIGINT, 
+	is_ephemeral BOOLEAN NOT NULL, 
+	heartbeat_at TIMESTAMP WITH TIME ZONE, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_agent_sessions PRIMARY KEY (id), 
+	CONSTRAINT fk_agent_sessions_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_agent_sessions_custom_provider_id_generative_model_c_af13 FOREIGN KEY(custom_provider_id) REFERENCES generative_model_custom_providers (id) ON DELETE SET NULL
+)
+
+
+2026-08-28 15:27:09,776 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,778 INFO sqlalchemy.engine.Engine CREATE INDEX ix_agent_sessions_custom_provider_id ON agent_sessions (custom_provider_id)
+2026-08-28 15:27:09,778 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,780 INFO sqlalchemy.engine.Engine CREATE INDEX ix_agent_sessions_user_id_updated_at ON agent_sessions (user_id, updated_at DESC)
+2026-08-28 15:27:09,780 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,781 INFO sqlalchemy.engine.Engine CREATE INDEX ix_agent_sessions_ephemeral_updated_at ON agent_sessions (updated_at) WHERE is_ephemeral IS TRUE
+2026-08-28 15:27:09,781 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,782 INFO sqlalchemy.engine.Engine CREATE INDEX ix_agent_sessions_updated_at_id ON agent_sessions (updated_at, id)
+2026-08-28 15:27:09,782 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,784 INFO sqlalchemy.engine.Engine 
+CREATE TABLE agent_session_messages (
+	id BIGSERIAL NOT NULL, 
+	agent_session_id BIGINT NOT NULL, 
+	message JSONB NOT NULL, 
+	message_id VARCHAR GENERATED ALWAYS AS (CAST(message ->> 'id' AS VARCHAR)) STORED NOT NULL, 
+	is_compaction_message BOOLEAN GENERATED ALWAYS AS (coalesce(CAST(message #>> '{metadata, phoenix, isCompactionMessage}' AS BOOLEAN), false)) STORED NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_agent_session_messages PRIMARY KEY (id), 
+	CONSTRAINT "ck_agent_session_messages_`valid_message_id`" CHECK (message_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'), 
+	CONSTRAINT fk_agent_session_messages_agent_session_id_agent_sessions FOREIGN KEY(agent_session_id) REFERENCES agent_sessions (id) ON DELETE CASCADE, 
+	CONSTRAINT uq_agent_session_messages_message_id UNIQUE (message_id)
+)
+
+
+2026-08-28 15:27:09,784 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,786 INFO sqlalchemy.engine.Engine CREATE INDEX ix_agent_session_messages_agent_session_id_id ON agent_session_messages (agent_session_id, id)
+2026-08-28 15:27:09,787 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,789 INFO sqlalchemy.engine.Engine CREATE INDEX ix_agent_session_messages_compaction ON agent_session_messages (agent_session_id, id DESC) WHERE is_compaction_message
+2026-08-28 15:27:09,789 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,801 INFO sqlalchemy.engine.Engine 
+CREATE TABLE agent_session_snapshots (
+	id BIGSERIAL NOT NULL, 
+	agent_session_id BIGINT NOT NULL, 
+	bashkit_snapshot BYTEA, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_agent_session_snapshots PRIMARY KEY (id), 
+	CONSTRAINT uq_agent_session_snapshots_agent_session_id UNIQUE (agent_session_id), 
+	CONSTRAINT fk_agent_session_snapshots_agent_session_id_agent_sessions FOREIGN KEY(agent_session_id) REFERENCES agent_sessions (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,801 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,805 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='e767d3c57f32' WHERE alembic_version.version_num = 'c9d0e1f2a3b4'
+2026-08-28 15:27:09,805 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,805 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_experiment_prompt_tasks_custom_provider_id ON experiment_prompt_tasks (custom_provider_id)
+2026-08-28 15:27:09,805 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,806 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_experiment_prompt_tasks_prompt_version_id ON experiment_prompt_tasks (prompt_version_id)
+2026-08-28 15:27:09,806 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,807 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_dataset_evaluators_user_id ON dataset_evaluators (user_id)
+2026-08-28 15:27:09,808 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,809 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_generative_model_custom_providers_user_id ON generative_model_custom_providers (user_id)
+2026-08-28 15:27:09,809 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,810 INFO sqlalchemy.engine.Engine CREATE INDEX IF NOT EXISTS ix_secrets_user_id ON secrets (user_id)
+2026-08-28 15:27:09,810 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,811 INFO sqlalchemy.engine.Engine SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)
+2026-08-28 15:27:09,811 INFO sqlalchemy.engine.Engine [cached since 0.07702s ago] ('ix_experiment_prompt_tasks_custom_provider_id',)
+2026-08-28 15:27:09,811 INFO sqlalchemy.engine.Engine SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)
+2026-08-28 15:27:09,811 INFO sqlalchemy.engine.Engine [cached since 0.07763s ago] ('ix_experiment_prompt_tasks_prompt_version_id',)
+2026-08-28 15:27:09,812 INFO sqlalchemy.engine.Engine SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)
+2026-08-28 15:27:09,812 INFO sqlalchemy.engine.Engine [cached since 0.07796s ago] ('ix_dataset_evaluators_user_id',)
+2026-08-28 15:27:09,812 INFO sqlalchemy.engine.Engine SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)
+2026-08-28 15:27:09,812 INFO sqlalchemy.engine.Engine [cached since 0.07827s ago] ('ix_generative_model_custom_providers_user_id',)
+2026-08-28 15:27:09,812 INFO sqlalchemy.engine.Engine SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)
+2026-08-28 15:27:09,812 INFO sqlalchemy.engine.Engine [cached since 0.0786s ago] ('ix_secrets_user_id',)
+2026-08-28 15:27:09,813 INFO sqlalchemy.engine.Engine 
+DROP INDEX IF EXISTS ix_latency
+2026-08-28 15:27:09,813 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,814 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='4aad9107d196' WHERE alembic_version.version_num = 'e767d3c57f32'
+2026-08-28 15:27:09,814 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,814 INFO sqlalchemy.engine.Engine 
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'phoenix_scoped') THEN
+                CREATE ROLE phoenix_scoped NOLOGIN;
+            END IF;
+        END
+        $$;
+        
+2026-08-28 15:27:09,814 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,815 INFO sqlalchemy.engine.Engine GRANT phoenix_scoped TO current_user
+2026-08-28 15:27:09,815 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ()
+2026-08-28 15:27:09,816 INFO sqlalchemy.engine.Engine GRANT SELECT ON projects, traces, spans TO phoenix_scoped
+2026-08-28 15:27:09,816 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,817 INFO sqlalchemy.engine.Engine ALTER TABLE projects ENABLE ROW LEVEL SECURITY
+2026-08-28 15:27:09,817 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,817 INFO sqlalchemy.engine.Engine ALTER TABLE projects FORCE ROW LEVEL SECURITY
+2026-08-28 15:27:09,817 INFO sqlalchemy.engine.Engine [generated in 0.00002s] ()
+2026-08-28 15:27:09,818 INFO sqlalchemy.engine.Engine ALTER TABLE traces ENABLE ROW LEVEL SECURITY
+2026-08-28 15:27:09,818 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,818 INFO sqlalchemy.engine.Engine ALTER TABLE traces FORCE ROW LEVEL SECURITY
+2026-08-28 15:27:09,818 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,819 INFO sqlalchemy.engine.Engine ALTER TABLE spans ENABLE ROW LEVEL SECURITY
+2026-08-28 15:27:09,819 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,819 INFO sqlalchemy.engine.Engine ALTER TABLE spans FORCE ROW LEVEL SECURITY
+2026-08-28 15:27:09,820 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,820 INFO sqlalchemy.engine.Engine 
+        CREATE POLICY projects_isolation ON projects
+        USING (current_setting('app.bypass_rls', true) = 'true' OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND id = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[])))
+        
+2026-08-28 15:27:09,820 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,821 INFO sqlalchemy.engine.Engine 
+        CREATE POLICY traces_isolation ON traces
+        USING (current_setting('app.bypass_rls', true) = 'true' OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND project_rowid = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[])))
+        
+2026-08-28 15:27:09,821 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,821 INFO sqlalchemy.engine.Engine 
+        CREATE POLICY spans_isolation ON spans
+        USING (
+            current_setting('app.bypass_rls', true) = 'true'
+            OR (
+                current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> ''
+                AND EXISTS (
+                    SELECT 1 FROM traces
+                    WHERE traces.id = spans.trace_rowid
+                    AND traces.project_rowid = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[])
+                )
+            )
+        )
+        
+2026-08-28 15:27:09,821 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,822 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='6960ef3a49b4' WHERE alembic_version.version_num = '4aad9107d196'
+2026-08-28 15:27:09,822 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,823 INFO sqlalchemy.engine.Engine GRANT INSERT, UPDATE, DELETE ON projects, traces, spans TO phoenix_scoped
+2026-08-28 15:27:09,823 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,823 INFO sqlalchemy.engine.Engine GRANT USAGE, SELECT ON SEQUENCE projects_id_seq, traces_id_seq, spans_id_seq TO phoenix_scoped
+2026-08-28 15:27:09,823 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,824 INFO sqlalchemy.engine.Engine ALTER POLICY projects_isolation ON projects WITH CHECK ((current_setting('app.bypass_rls', true) = 'true' OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND projects.id = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[]))))
+2026-08-28 15:27:09,824 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,824 INFO sqlalchemy.engine.Engine ALTER POLICY traces_isolation ON traces WITH CHECK ((current_setting('app.bypass_rls', true) = 'true' OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND traces.project_rowid = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[]))))
+2026-08-28 15:27:09,824 INFO sqlalchemy.engine.Engine [generated in 0.00002s] ()
+2026-08-28 15:27:09,825 INFO sqlalchemy.engine.Engine ALTER POLICY spans_isolation ON spans WITH CHECK ((current_setting('app.bypass_rls', true) = 'true' OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND 
+        EXISTS (
+            SELECT 1 FROM traces
+            WHERE traces.id = spans.trace_rowid
+            AND traces.project_rowid = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[])
+        )
+    )))
+2026-08-28 15:27:09,825 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,826 INFO sqlalchemy.engine.Engine GRANT SELECT, INSERT, UPDATE, DELETE ON project_sessions TO phoenix_scoped
+2026-08-28 15:27:09,826 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,827 INFO sqlalchemy.engine.Engine GRANT USAGE, SELECT ON SEQUENCE project_sessions_id_seq TO phoenix_scoped
+2026-08-28 15:27:09,827 INFO sqlalchemy.engine.Engine [generated in 0.00002s] ()
+2026-08-28 15:27:09,827 INFO sqlalchemy.engine.Engine ALTER TABLE project_sessions ENABLE ROW LEVEL SECURITY
+2026-08-28 15:27:09,827 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,828 INFO sqlalchemy.engine.Engine ALTER TABLE project_sessions FORCE ROW LEVEL SECURITY
+2026-08-28 15:27:09,828 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,828 INFO sqlalchemy.engine.Engine 
+            CREATE POLICY project_sessions_isolation ON project_sessions
+            USING ((current_setting('app.bypass_rls', true) = 'true' OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND project_sessions.project_id = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[]))))
+            WITH CHECK ((current_setting('app.bypass_rls', true) = 'true' OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND project_sessions.project_id = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[]))))
+            
+2026-08-28 15:27:09,828 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,829 INFO sqlalchemy.engine.Engine GRANT SELECT, INSERT, UPDATE, DELETE ON trace_annotations TO phoenix_scoped
+2026-08-28 15:27:09,829 INFO sqlalchemy.engine.Engine [generated in 0.00002s] ()
+2026-08-28 15:27:09,830 INFO sqlalchemy.engine.Engine GRANT USAGE, SELECT ON SEQUENCE trace_annotations_id_seq TO phoenix_scoped
+2026-08-28 15:27:09,830 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,831 INFO sqlalchemy.engine.Engine ALTER TABLE trace_annotations ENABLE ROW LEVEL SECURITY
+2026-08-28 15:27:09,831 INFO sqlalchemy.engine.Engine [generated in 0.00002s] ()
+2026-08-28 15:27:09,831 INFO sqlalchemy.engine.Engine ALTER TABLE trace_annotations FORCE ROW LEVEL SECURITY
+2026-08-28 15:27:09,831 INFO sqlalchemy.engine.Engine [generated in 0.00002s] ()
+2026-08-28 15:27:09,832 INFO sqlalchemy.engine.Engine 
+            CREATE POLICY trace_annotations_isolation ON trace_annotations
+            USING ((current_setting('app.bypass_rls', true) = 'true' OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND 
+        EXISTS (
+            SELECT 1 FROM traces
+            WHERE traces.id = trace_annotations.trace_rowid
+            AND traces.project_rowid = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[])
+        )
+    )))
+            WITH CHECK ((current_setting('app.bypass_rls', true) = 'true' OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND 
+        EXISTS (
+            SELECT 1 FROM traces
+            WHERE traces.id = trace_annotations.trace_rowid
+            AND traces.project_rowid = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[])
+        )
+    )))
+            
+2026-08-28 15:27:09,832 INFO sqlalchemy.engine.Engine [generated in 0.00002s] ()
+2026-08-28 15:27:09,833 INFO sqlalchemy.engine.Engine GRANT SELECT, INSERT, UPDATE, DELETE ON span_costs TO phoenix_scoped
+2026-08-28 15:27:09,833 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,833 INFO sqlalchemy.engine.Engine GRANT USAGE, SELECT ON SEQUENCE span_costs_id_seq TO phoenix_scoped
+2026-08-28 15:27:09,833 INFO sqlalchemy.engine.Engine [generated in 0.00002s] ()
+2026-08-28 15:27:09,834 INFO sqlalchemy.engine.Engine ALTER TABLE span_costs ENABLE ROW LEVEL SECURITY
+2026-08-28 15:27:09,834 INFO sqlalchemy.engine.Engine [generated in 0.00002s] ()
+2026-08-28 15:27:09,834 INFO sqlalchemy.engine.Engine ALTER TABLE span_costs FORCE ROW LEVEL SECURITY
+2026-08-28 15:27:09,834 INFO sqlalchemy.engine.Engine [generated in 0.00002s] ()
+2026-08-28 15:27:09,835 INFO sqlalchemy.engine.Engine 
+            CREATE POLICY span_costs_isolation ON span_costs
+            USING ((current_setting('app.bypass_rls', true) = 'true' OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND 
+        EXISTS (
+            SELECT 1 FROM traces
+            WHERE traces.id = span_costs.trace_rowid
+            AND traces.project_rowid = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[])
+        )
+    )))
+            WITH CHECK ((current_setting('app.bypass_rls', true) = 'true' OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND 
+        EXISTS (
+            SELECT 1 FROM traces
+            WHERE traces.id = span_costs.trace_rowid
+            AND traces.project_rowid = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[])
+        )
+    )))
+            
+2026-08-28 15:27:09,835 INFO sqlalchemy.engine.Engine [generated in 0.00002s] ()
+2026-08-28 15:27:09,836 INFO sqlalchemy.engine.Engine GRANT SELECT, INSERT, UPDATE, DELETE ON project_session_annotations TO phoenix_scoped
+2026-08-28 15:27:09,836 INFO sqlalchemy.engine.Engine [generated in 0.00002s] ()
+2026-08-28 15:27:09,836 INFO sqlalchemy.engine.Engine GRANT USAGE, SELECT ON SEQUENCE project_session_annotations_id_seq TO phoenix_scoped
+2026-08-28 15:27:09,836 INFO sqlalchemy.engine.Engine [generated in 0.00002s] ()
+2026-08-28 15:27:09,837 INFO sqlalchemy.engine.Engine ALTER TABLE project_session_annotations ENABLE ROW LEVEL SECURITY
+2026-08-28 15:27:09,837 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,838 INFO sqlalchemy.engine.Engine ALTER TABLE project_session_annotations FORCE ROW LEVEL SECURITY
+2026-08-28 15:27:09,838 INFO sqlalchemy.engine.Engine [generated in 0.00002s] ()
+2026-08-28 15:27:09,838 INFO sqlalchemy.engine.Engine 
+            CREATE POLICY project_session_annotations_isolation ON project_session_annotations
+            USING ((current_setting('app.bypass_rls', true) = 'true' OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND 
+        EXISTS (
+            SELECT 1 FROM project_sessions
+            WHERE project_sessions.id = project_session_annotations.project_session_id
+            AND project_sessions.project_id = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[])
+        )
+    )))
+            WITH CHECK ((current_setting('app.bypass_rls', true) = 'true' OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND 
+        EXISTS (
+            SELECT 1 FROM project_sessions
+            WHERE project_sessions.id = project_session_annotations.project_session_id
+            AND project_sessions.project_id = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[])
+        )
+    )))
+            
+2026-08-28 15:27:09,838 INFO sqlalchemy.engine.Engine [generated in 0.00002s] ()
+2026-08-28 15:27:09,839 INFO sqlalchemy.engine.Engine GRANT SELECT, INSERT, UPDATE, DELETE ON span_annotations TO phoenix_scoped
+2026-08-28 15:27:09,839 INFO sqlalchemy.engine.Engine [generated in 0.00002s] ()
+2026-08-28 15:27:09,840 INFO sqlalchemy.engine.Engine GRANT USAGE, SELECT ON SEQUENCE span_annotations_id_seq TO phoenix_scoped
+2026-08-28 15:27:09,840 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,840 INFO sqlalchemy.engine.Engine ALTER TABLE span_annotations ENABLE ROW LEVEL SECURITY
+2026-08-28 15:27:09,840 INFO sqlalchemy.engine.Engine [generated in 0.00002s] ()
+2026-08-28 15:27:09,841 INFO sqlalchemy.engine.Engine ALTER TABLE span_annotations FORCE ROW LEVEL SECURITY
+2026-08-28 15:27:09,841 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,854 INFO sqlalchemy.engine.Engine 
+            CREATE POLICY span_annotations_isolation ON span_annotations
+            USING ((current_setting('app.bypass_rls', true) = 'true' OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND 
+        EXISTS (
+            SELECT 1 FROM spans
+            JOIN traces ON traces.id = spans.trace_rowid
+            WHERE spans.id = span_annotations.span_rowid
+            AND traces.project_rowid = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[])
+        )
+    )))
+            WITH CHECK ((current_setting('app.bypass_rls', true) = 'true' OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND 
+        EXISTS (
+            SELECT 1 FROM spans
+            JOIN traces ON traces.id = spans.trace_rowid
+            WHERE spans.id = span_annotations.span_rowid
+            AND traces.project_rowid = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[])
+        )
+    )))
+            
+2026-08-28 15:27:09,854 INFO sqlalchemy.engine.Engine [generated in 0.00006s] ()
+2026-08-28 15:27:09,855 INFO sqlalchemy.engine.Engine GRANT SELECT, INSERT, UPDATE, DELETE ON document_annotations TO phoenix_scoped
+2026-08-28 15:27:09,855 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,856 INFO sqlalchemy.engine.Engine GRANT USAGE, SELECT ON SEQUENCE document_annotations_id_seq TO phoenix_scoped
+2026-08-28 15:27:09,856 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,857 INFO sqlalchemy.engine.Engine ALTER TABLE document_annotations ENABLE ROW LEVEL SECURITY
+2026-08-28 15:27:09,857 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,857 INFO sqlalchemy.engine.Engine ALTER TABLE document_annotations FORCE ROW LEVEL SECURITY
+2026-08-28 15:27:09,857 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,858 INFO sqlalchemy.engine.Engine 
+            CREATE POLICY document_annotations_isolation ON document_annotations
+            USING ((current_setting('app.bypass_rls', true) = 'true' OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND 
+        EXISTS (
+            SELECT 1 FROM spans
+            JOIN traces ON traces.id = spans.trace_rowid
+            WHERE spans.id = document_annotations.span_rowid
+            AND traces.project_rowid = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[])
+        )
+    )))
+            WITH CHECK ((current_setting('app.bypass_rls', true) = 'true' OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND 
+        EXISTS (
+            SELECT 1 FROM spans
+            JOIN traces ON traces.id = spans.trace_rowid
+            WHERE spans.id = document_annotations.span_rowid
+            AND traces.project_rowid = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[])
+        )
+    )))
+            
+2026-08-28 15:27:09,858 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,859 INFO sqlalchemy.engine.Engine GRANT SELECT, INSERT, UPDATE, DELETE ON span_cost_details TO phoenix_scoped
+2026-08-28 15:27:09,859 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,859 INFO sqlalchemy.engine.Engine GRANT USAGE, SELECT ON SEQUENCE span_cost_details_id_seq TO phoenix_scoped
+2026-08-28 15:27:09,859 INFO sqlalchemy.engine.Engine [generated in 0.00002s] ()
+2026-08-28 15:27:09,860 INFO sqlalchemy.engine.Engine ALTER TABLE span_cost_details ENABLE ROW LEVEL SECURITY
+2026-08-28 15:27:09,860 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,861 INFO sqlalchemy.engine.Engine ALTER TABLE span_cost_details FORCE ROW LEVEL SECURITY
+2026-08-28 15:27:09,861 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,861 INFO sqlalchemy.engine.Engine 
+            CREATE POLICY span_cost_details_isolation ON span_cost_details
+            USING ((current_setting('app.bypass_rls', true) = 'true' OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND 
+        EXISTS (
+            SELECT 1 FROM span_costs
+            JOIN traces ON traces.id = span_costs.trace_rowid
+            WHERE span_costs.id = span_cost_details.span_cost_id
+            AND traces.project_rowid = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[])
+        )
+    )))
+            WITH CHECK ((current_setting('app.bypass_rls', true) = 'true' OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND 
+        EXISTS (
+            SELECT 1 FROM span_costs
+            JOIN traces ON traces.id = span_costs.trace_rowid
+            WHERE span_costs.id = span_cost_details.span_cost_id
+            AND traces.project_rowid = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[])
+        )
+    )))
+            
+2026-08-28 15:27:09,861 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,864 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='225b4cdcd01a' WHERE alembic_version.version_num = '6960ef3a49b4'
+2026-08-28 15:27:09,864 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,864 INFO sqlalchemy.engine.Engine SELECT current_schema()
+2026-08-28 15:27:09,864 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,865 INFO sqlalchemy.engine.Engine GRANT USAGE ON SCHEMA "public" TO phoenix_scoped
+2026-08-28 15:27:09,865 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,866 INFO sqlalchemy.engine.Engine GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "public" TO phoenix_scoped
+2026-08-28 15:27:09,866 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,868 INFO sqlalchemy.engine.Engine ALTER DEFAULT PRIVILEGES IN SCHEMA "public" GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO phoenix_scoped
+2026-08-28 15:27:09,868 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,868 INFO sqlalchemy.engine.Engine GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA "public" TO phoenix_scoped
+2026-08-28 15:27:09,868 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,869 INFO sqlalchemy.engine.Engine ALTER DEFAULT PRIVILEGES IN SCHEMA "public" GRANT USAGE, SELECT ON SEQUENCES TO phoenix_scoped
+2026-08-28 15:27:09,869 INFO sqlalchemy.engine.Engine [generated in 0.00002s] ()
+2026-08-28 15:27:09,870 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='21344763fd8b' WHERE alembic_version.version_num = '225b4cdcd01a'
+2026-08-28 15:27:09,870 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,871 INFO sqlalchemy.engine.Engine 
+CREATE TABLE project_groups (
+	id BIGSERIAL NOT NULL, 
+	name VARCHAR NOT NULL, 
+	description VARCHAR, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_project_groups PRIMARY KEY (id)
+)
+
+
+2026-08-28 15:27:09,871 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,874 INFO sqlalchemy.engine.Engine CREATE UNIQUE INDEX ix_project_groups_name ON project_groups (name)
+2026-08-28 15:27:09,874 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,875 INFO sqlalchemy.engine.Engine 
+CREATE TABLE external_role_project_group_mappings (
+	id BIGSERIAL NOT NULL, 
+	external_role VARCHAR NOT NULL, 
+	project_group_id BIGINT NOT NULL, 
+	role VARCHAR NOT NULL CONSTRAINT "ck_external_role_project_group_mappings_`valid_project__be3b" CHECK (role IN ('VIEWER', 'MEMBER', 'ADMIN')), 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_external_role_project_group_mappings PRIMARY KEY (id), 
+	CONSTRAINT fk_external_role_project_group_mappings_project_group_i_f8aa FOREIGN KEY(project_group_id) REFERENCES project_groups (id) ON DELETE CASCADE
+)
+
+
+2026-08-28 15:27:09,875 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,877 INFO sqlalchemy.engine.Engine CREATE UNIQUE INDEX ix_external_role_project_group_mappings_external_role ON external_role_project_group_mappings (external_role)
+2026-08-28 15:27:09,877 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-08-28 15:27:09,878 INFO sqlalchemy.engine.Engine CREATE INDEX ix_external_role_project_group_mappings_project_group_id ON external_role_project_group_mappings (project_group_id)
+2026-08-28 15:27:09,878 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,879 INFO sqlalchemy.engine.Engine ALTER TABLE users ADD COLUMN idp_groups JSONB DEFAULT '[]' NOT NULL
+2026-08-28 15:27:09,880 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,880 INFO sqlalchemy.engine.Engine INSERT INTO project_groups (name) VALUES ($1)
+2026-08-28 15:27:09,880 INFO sqlalchemy.engine.Engine [generated in 0.00004s] ('default',)
+2026-08-28 15:27:09,881 INFO sqlalchemy.engine.Engine SELECT id FROM project_groups WHERE name = $1
+2026-08-28 15:27:09,881 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ('default',)
+2026-08-28 15:27:09,882 INFO sqlalchemy.engine.Engine ALTER TABLE projects ADD COLUMN project_group_id BIGINT
+2026-08-28 15:27:09,882 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,882 INFO sqlalchemy.engine.Engine ALTER TABLE projects ADD CONSTRAINT fk_projects_project_group_id_project_groups FOREIGN KEY(project_group_id) REFERENCES project_groups (id) ON DELETE RESTRICT
+2026-08-28 15:27:09,882 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,883 INFO sqlalchemy.engine.Engine UPDATE projects SET project_group_id = $1 WHERE project_group_id IS NULL
+2026-08-28 15:27:09,883 INFO sqlalchemy.engine.Engine [generated in 0.00003s] (1,)
+2026-08-28 15:27:09,884 INFO sqlalchemy.engine.Engine ALTER TABLE projects ALTER COLUMN project_group_id SET NOT NULL
+2026-08-28 15:27:09,884 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,884 INFO sqlalchemy.engine.Engine CREATE INDEX ix_projects_project_group_id ON projects (project_group_id)
+2026-08-28 15:27:09,884 INFO sqlalchemy.engine.Engine [no key 0.00002s] ()
+2026-08-28 15:27:09,886 INFO sqlalchemy.engine.Engine 
+        ALTER POLICY projects_isolation ON projects
+        USING (
+            current_setting('app.bypass_rls', true) = 'true'
+            OR (current_setting('app.readable_project_ids', true) IS NOT NULL AND current_setting('app.readable_project_ids', true) <> '' AND id = ANY(string_to_array(current_setting('app.readable_project_ids', true), ',')::bigint[]))
+            OR (current_setting('app.writable_project_group_ids', true) IS NOT NULL AND current_setting('app.writable_project_group_ids', true) <> '' AND project_group_id = ANY(string_to_array(current_setting('app.writable_project_group_ids', true), ',')::bigint[]))
+        )
+        WITH CHECK (
+            current_setting('app.bypass_rls', true) = 'true'
+            OR (current_setting('app.writable_project_group_ids', true) IS NOT NULL AND current_setting('app.writable_project_group_ids', true) <> '' AND project_group_id = ANY(string_to_array(current_setting('app.writable_project_group_ids', true), ',')::bigint[]))
+        )
+        
+2026-08-28 15:27:09,886 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,886 INFO sqlalchemy.engine.Engine UPDATE alembic_version SET version_num='acd16dbc13d0' WHERE alembic_version.version_num = '21344763fd8b'
+2026-08-28 15:27:09,886 INFO sqlalchemy.engine.Engine [generated in 0.00003s] ()
+2026-08-28 15:27:09,887 INFO sqlalchemy.engine.Engine COMMIT
+---------------------------
+✅ Migrations completed in 0.708 seconds.
+2026-08-28 15:27:09,958 - phoenix.server.app - WARNING - CSRF protection can be enabled by listing trusted origins via the `PHOENIX_CSRF_TRUSTED_ORIGINS` environment variable. This is recommended when setting up OAuth2 clients or sending password reset emails.
+/Users/adammyers/github/phoenix/.venv/lib/python3.10/site-packages/pydantic/json_schema.py:2463: PydanticJsonSchemaWarning: Default value <phoenix.db.types.db_helper_types.Undefined object at 0x12a5160e0> is not JSON serializable; excluding default from JSON schema [non-serializable-default]
+  warnings.warn(message, PydanticJsonSchemaWarning)
+INFO:     Started server process [81274]
+INFO:     Waiting for application startup.
+2026-08-28 15:27:11,217 - phoenix.server.api.builtin_evaluator_sync - INFO - Synced 5 builtin evaluators to database
+2026-08-28 15:27:11,225 - phoenix.server.sandbox.sync - INFO - Inserted sandbox_providers row: backend_type='WASM'
+2026-08-28 15:27:11,225 - phoenix.server.sandbox.sync - INFO - Inserted sandbox_providers row: backend_type='E2B'
+2026-08-28 15:27:11,225 - phoenix.server.sandbox.sync - INFO - Inserted sandbox_providers row: backend_type='DAYTONA'
+2026-08-28 15:27:11,225 - phoenix.server.sandbox.sync - INFO - Inserted sandbox_providers row: backend_type='VERCEL'
+2026-08-28 15:27:11,225 - phoenix.server.sandbox.sync - INFO - Inserted sandbox_providers row: backend_type='DENO'
+2026-08-28 15:27:11,225 - phoenix.server.sandbox.sync - INFO - Inserted sandbox_providers row: backend_type='MODAL'
+2026-08-28 15:27:11,225 - phoenix.server.sandbox.sync - INFO - Inserted sandbox_providers row: backend_type='MONTY'
+2026-08-28 15:27:11,227 - phoenix.server.sandbox.sync - INFO - Inserted default sandbox_configs row: backend_type='WASM', language='PYTHON'
+2026-08-28 15:27:11,227 - phoenix.server.sandbox.sync - INFO - Inserted default sandbox_configs row: backend_type='DENO', language='TYPESCRIPT'
+2026-08-28 15:27:11,227 - phoenix.server.sandbox.sync - INFO - Inserted default sandbox_configs row: backend_type='MONTY', language='PYTHON'
+2026-08-28 15:27:11,238 - phoenix.db.facilitator - DEBUG - No expired childless GenerativeModel records found for permanent deletion
+E0828 15:27:11.255767 9831437 add_port.cc:83] Failed to add port to server: No address added out of total 1 resolved for '[::]:4317' (Failed to add any wildcard listeners: Error in bind for address '[::]:4317': Address already in useError in bind for address '0.0.0.0:4317': Address already in use)
+ERROR:    Traceback (most recent call last):
+  File "/Users/adammyers/github/phoenix/.venv/lib/python3.10/site-packages/starlette/routing.py", line 648, in lifespan
+    async with self.lifespan_context(app) as maybe_state:
+  File "/Users/adammyers/.local/share/uv/python/cpython-3.10.18-macos-aarch64-none/lib/python3.10/contextlib.py", line 199, in __aenter__
+    return await anext(self.gen)
+  File "/Users/adammyers/github/phoenix/.venv/lib/python3.10/site-packages/fastapi/routing.py", line 240, in merged_lifespan
+    async with original_context(app) as maybe_original_state:
+  File "/Users/adammyers/.local/share/uv/python/cpython-3.10.18-macos-aarch64-none/lib/python3.10/contextlib.py", line 199, in __aenter__
+    return await anext(self.gen)
+  File "/Users/adammyers/github/phoenix/.venv/lib/python3.10/site-packages/fastapi/routing.py", line 240, in merged_lifespan
+    async with original_context(app) as maybe_original_state:
+  File "/Users/adammyers/.local/share/uv/python/cpython-3.10.18-macos-aarch64-none/lib/python3.10/contextlib.py", line 199, in __aenter__
+    return await anext(self.gen)
+  File "/Users/adammyers/github/phoenix/.venv/lib/python3.10/site-packages/fastapi/routing.py", line 240, in merged_lifespan
+    async with original_context(app) as maybe_original_state:
+  File "/Users/adammyers/.local/share/uv/python/cpython-3.10.18-macos-aarch64-none/lib/python3.10/contextlib.py", line 199, in __aenter__
+    return await anext(self.gen)
+  File "/Users/adammyers/github/phoenix/.venv/lib/python3.10/site-packages/fastapi/routing.py", line 240, in merged_lifespan
+    async with original_context(app) as maybe_original_state:
+  File "/Users/adammyers/.local/share/uv/python/cpython-3.10.18-macos-aarch64-none/lib/python3.10/contextlib.py", line 199, in __aenter__
+    return await anext(self.gen)
+  File "/Users/adammyers/github/phoenix/.venv/lib/python3.10/site-packages/fastapi/routing.py", line 240, in merged_lifespan
+    async with original_context(app) as maybe_original_state:
+  File "/Users/adammyers/.local/share/uv/python/cpython-3.10.18-macos-aarch64-none/lib/python3.10/contextlib.py", line 199, in __aenter__
+    return await anext(self.gen)
+  File "/Users/adammyers/github/phoenix/.venv/lib/python3.10/site-packages/fastapi/routing.py", line 240, in merged_lifespan
+    async with original_context(app) as maybe_original_state:
+  File "/Users/adammyers/.local/share/uv/python/cpython-3.10.18-macos-aarch64-none/lib/python3.10/contextlib.py", line 199, in __aenter__
+    return await anext(self.gen)
+  File "/Users/adammyers/github/phoenix/.venv/lib/python3.10/site-packages/fastapi/routing.py", line 240, in merged_lifespan
+    async with original_context(app) as maybe_original_state:
+  File "/Users/adammyers/.local/share/uv/python/cpython-3.10.18-macos-aarch64-none/lib/python3.10/contextlib.py", line 199, in __aenter__
+    return await anext(self.gen)
+  File "/Users/adammyers/github/phoenix/.venv/lib/python3.10/site-packages/fastapi/routing.py", line 240, in merged_lifespan
+    async with original_context(app) as maybe_original_state:
+  File "/Users/adammyers/.local/share/uv/python/cpython-3.10.18-macos-aarch64-none/lib/python3.10/contextlib.py", line 199, in __aenter__
+    return await anext(self.gen)
+  File "/Users/adammyers/github/phoenix/.venv/lib/python3.10/site-packages/fastapi/routing.py", line 240, in merged_lifespan
+    async with original_context(app) as maybe_original_state:
+  File "/Users/adammyers/.local/share/uv/python/cpython-3.10.18-macos-aarch64-none/lib/python3.10/contextlib.py", line 199, in __aenter__
+    return await anext(self.gen)
+  File "/Users/adammyers/github/phoenix/.venv/lib/python3.10/site-packages/fastapi/routing.py", line 240, in merged_lifespan
+    async with original_context(app) as maybe_original_state:
+  File "/Users/adammyers/.local/share/uv/python/cpython-3.10.18-macos-aarch64-none/lib/python3.10/contextlib.py", line 199, in __aenter__
+    return await anext(self.gen)
+  File "/Users/adammyers/github/phoenix/src/phoenix/server/app.py", line 763, in lifespan
+    await stack.enter_async_context(grpc_server)
+  File "/Users/adammyers/.local/share/uv/python/cpython-3.10.18-macos-aarch64-none/lib/python3.10/contextlib.py", line 619, in enter_async_context
+    result = await _cm_type.__aenter__(cm)
+  File "/Users/adammyers/github/phoenix/src/phoenix/server/grpc_server.py", line 109, in __aenter__
+    server.add_insecure_port(f"[::]:{self._port}")
+  File "/Users/adammyers/github/phoenix/.venv/lib/python3.10/site-packages/grpc/aio/_server.py", line 113, in add_insecure_port
+    return _common.validate_port_binding_result(
+  File "/Users/adammyers/github/phoenix/.venv/lib/python3.10/site-packages/grpc/_common.py", line 179, in validate_port_binding_result
+    raise RuntimeError(_ERROR_MESSAGE_PORT_BINDING_FAILED % address)
+RuntimeError: Failed to bind to address [::]:4317; set GRPC_VERBOSITY=debug environment variable to see detailed error message.
+
+ERROR:    Application startup failed. Exiting.
