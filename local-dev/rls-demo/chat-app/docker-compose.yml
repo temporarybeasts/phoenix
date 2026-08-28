@@ -1,0 +1,14 @@
+# Convenience for building/running a single chat-app instance. For
+# multiple named instances with different identities/keys, build the
+# image once (`docker compose build`) then run it directly with
+# `docker run` -- see local-dev/rls-demo/README.md section 5.
+services:
+  chat-app:
+    build: .
+    environment:
+      - CHAT_APP_NAME=${CHAT_APP_NAME:-demo-chat-app}
+      - PHOENIX_API_KEY=${PHOENIX_API_KEY:?set PHOENIX_API_KEY before running}
+      - PHOENIX_BASE_URL=${PHOENIX_BASE_URL:-http://host.docker.internal:6006}
+      - TRACE_INTERVAL_SECONDS=${TRACE_INTERVAL_SECONDS:-5}
+    extra_hosts:
+      - host.docker.internal:host-gateway
