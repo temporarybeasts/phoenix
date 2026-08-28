@@ -30,6 +30,7 @@ import {
   NavLink,
   NavSeparator,
   NavTitle,
+  ProjectGroupSwitcher,
   SideNavbar,
   SideNavToggleButton,
   TopNavActionsProvider,
@@ -297,6 +298,9 @@ function SideNavContent({
       <Brand />
       <Flex direction="column" justifyContent="space-between" flex="1 1 auto">
         <ul css={sideLinksCSS}>
+          <li key="project-group">
+            <ProjectGroupSwitcher isExpanded={isExpanded} />
+          </li>
           <li key="search">
             <GlobalSearch isExpanded={isExpanded} />
           </li>

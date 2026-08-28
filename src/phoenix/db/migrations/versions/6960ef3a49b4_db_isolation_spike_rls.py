@@ -1,7 +1,7 @@
 """DB-isolation spike: RLS + role-switching on spans/traces/projects
 
 Revision ID: 6960ef3a49b4
-Revises: 3419314c84b7
+Revises: 4aad9107d196
 Create Date: 2026-08-21 00:00:00.000000
 
 PROVISIONAL -- see the SSO/RBAC fork plan's "DB-isolation spike (B + A)"
@@ -40,7 +40,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "6960ef3a49b4"
-down_revision: Union[str, None] = "3419314c84b7"
+down_revision: Union[str, None] = "4aad9107d196"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

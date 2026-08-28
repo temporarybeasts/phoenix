@@ -46,6 +46,15 @@ declare global {
        * Passed from the backend to ensure single source of truth.
        */
       authErrorMessages: Record<string, string>;
+      /**
+       * Whether any configured OAuth2 client captures an IdP groups claim --
+       * i.e. whether project-group RBAC via external-role mapping is
+       * actually in use in this deployment. False means no external-role
+       * mapping can ever apply to anyone (IdP or local), and project
+       * creation always succeeds into the default project group -- see
+       * `useCanCreateProject`.
+       */
+      projectGroupRbacEnabled: boolean;
     };
   }
 }

@@ -3,7 +3,7 @@ from sqlalchemy import insert, select
 
 from phoenix.db import models
 from phoenix.server.access.idp_sync import sync_idp_groups
-from phoenix.server.access.resolution import _project_permissions_cache
+from phoenix.server.access.resolution import _membership_cache
 from phoenix.server.types import DbSessionFactory
 
 
@@ -70,7 +70,12 @@ async def test_empty_groups_clears_list(db: DbSessionFactory) -> None:
 
 async def test_sync_invalidates_cache(db: DbSessionFactory) -> None:
     user_id = await _create_user(db)
-    _project_permissions_cache[user_id] = {123: frozenset({"project:read"})}
+    # Cache key is (user_id, active_project_group_id) -- seed entries for a
+    # couple of active-group variants to prove invalidation sweeps all of
+    # them, not just one.
+    _membership_cache[(user_id, None)] = (1, "VIEWER")
+    _membership_cache[(user_id, 1)] = (1, "VIEWER")
     async with db() as session:
         await sync_idp_groups(session, user_id, ["group-a"])
-    assert user_id not in _project_permissions_cache
+    assert (user_id, None) not in _membership_cache
+    assert (user_id, 1) not in _membership_cache

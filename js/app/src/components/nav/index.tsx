@@ -1,5 +1,6 @@
 export * from "./AccountMenu";
 export * from "./Navbar";
+export * from "./ProjectGroupSwitcher";
 export * from "./ThemeToggle";
 export * from "./NavBreadcrumb";
 export * from "./SideNavToggleButton";

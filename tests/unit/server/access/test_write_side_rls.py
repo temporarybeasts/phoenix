@@ -41,10 +41,19 @@ async def _bypass(conn: AsyncConnection) -> None:
     await conn.execute(text("SELECT set_config('app.bypass_rls', 'true', true)"))
 
 
-async def _restricted(conn: AsyncConnection, project_ids: list[int]) -> None:
+async def _restricted(
+    conn: AsyncConnection,
+    project_ids: list[int],
+    writable_project_group_ids: "list[int] | None" = None,
+) -> None:
     ids_csv = ",".join(str(i) for i in project_ids)
     await conn.execute(
         text("SELECT set_config('app.readable_project_ids', :ids, true)"), {"ids": ids_csv}
+    )
+    group_ids_csv = ",".join(str(i) for i in (writable_project_group_ids or []))
+    await conn.execute(
+        text("SELECT set_config('app.writable_project_group_ids', :ids, true)"),
+        {"ids": group_ids_csv},
     )
     await conn.execute(text("SET LOCAL ROLE phoenix_scoped"))
 
@@ -58,25 +67,47 @@ async def _no_guc_but_scoped(conn: AsyncConnection) -> None:
 
 
 class _Seed:
-    def __init__(self, project_a: int, project_b: int, seeded: dict[str, dict[str, int]]) -> None:
+    def __init__(
+        self,
+        project_a: int,
+        project_b: int,
+        group_a: int,
+        group_b: int,
+        seeded: dict[str, dict[str, int]],
+    ) -> None:
         self.project_a = project_a
         self.project_b = project_b
+        self.group_a = group_a
+        self.group_b = group_b
         self.seeded = seeded  # table -> {"a": id_in_project_a, "b": id_in_project_b}
 
 
 async def _seed(engine: AsyncEngine) -> _Seed:
     """Seeds one row per project across all 9 project-scoped tables plus
     their two join-depth categories, via a bypassing (superuser) session.
+    Each project gets its own project group (project A -> group A, project
+    B -> group B), so tests can exercise group-scoped writable checks
+    without the two projects being interchangeable.
     """
     seeded: dict[str, dict[str, int]] = {}
     async with engine.begin() as conn:
         await _bypass(conn)
 
+        group_ids = {}
+        for label in ("a", "b"):
+            group_ids[label] = await conn.scalar(
+                text("INSERT INTO project_groups (name) VALUES (:name) RETURNING id"),
+                {"name": f"group_{label}_{token_hex(4)}"},
+            )
+
         project_ids = {}
         for label in ("a", "b"):
             project_ids[label] = await conn.scalar(
-                text("INSERT INTO projects (name) VALUES (:name) RETURNING id"),
-                {"name": f"project_{label}_{token_hex(4)}"},
+                text(
+                    "INSERT INTO projects (name, project_group_id) "
+                    "VALUES (:name, :group_id) RETURNING id"
+                ),
+                {"name": f"project_{label}_{token_hex(4)}", "group_id": group_ids[label]},
             )
 
         for label in ("a", "b"):
@@ -178,7 +209,7 @@ async def _seed(engine: AsyncEngine) -> _Seed:
             )
             seeded.setdefault("span_cost_details", {})[label] = span_cost_detail_id
 
-    return _Seed(project_ids["a"], project_ids["b"], seeded)
+    return _Seed(project_ids["a"], project_ids["b"], group_ids["a"], group_ids["b"], seeded)
 
 
 async def test_bypass_sees_and_writes_across_all_projects(
@@ -249,6 +280,50 @@ async def test_restricted_role_insert_outside_readable_project_rejected(
                         "'APP')"
                     ),
                     {"trace_rowid": seed.seeded["traces"]["b"]},
+                )
+
+
+async def test_restricted_role_can_insert_new_project_into_writable_group(
+    migrated_postgresql_engine: AsyncEngine,
+) -> None:
+    """Regression test for the bug the `projects_isolation` WITH CHECK fix
+    (migration acd16dbc13d0) addresses: a brand-new project row's own `id`
+    can never already be a member of `app.readable_project_ids` (that GUC
+    reflects *pre-existing* readable projects), so the original WITH CHECK
+    (`id = ANY(readable_project_ids)`) rejected every non-admin INSERT into
+    `projects`, untested until now. The fixed policy checks the new row's
+    `project_group_id` against `app.writable_project_group_ids` instead.
+    """
+    seed = await _seed(migrated_postgresql_engine)
+    async with migrated_postgresql_engine.begin() as conn:
+        await _restricted(conn, [seed.project_a], writable_project_group_ids=[seed.group_a])
+        new_project_id = await conn.scalar(
+            text(
+                "INSERT INTO projects (name, project_group_id) "
+                "VALUES (:name, :group_id) RETURNING id"
+            ),
+            {"name": f"new_project_{token_hex(4)}", "group_id": seed.group_a},
+        )
+        assert new_project_id is not None
+
+
+async def test_restricted_role_insert_project_outside_writable_group_rejected(
+    migrated_postgresql_engine: AsyncEngine,
+) -> None:
+    seed = await _seed(migrated_postgresql_engine)
+    async with migrated_postgresql_engine.connect() as conn:
+        async with conn.begin():
+            # Readable (so this isn't conflated with the readable-ids gate)
+            # but not in the writable-groups GUC -- e.g. a VIEWER-only
+            # membership, which get_writable_project_group_ids never
+            # includes.
+            await _restricted(
+                conn, [seed.project_a, seed.project_b], writable_project_group_ids=[seed.group_a]
+            )
+            with pytest.raises(Exception, match="row-level security"):
+                await conn.execute(
+                    text("INSERT INTO projects (name, project_group_id) VALUES (:name, :group_id)"),
+                    {"name": f"illegal_project_{token_hex(4)}", "group_id": seed.group_b},
                 )
 
 

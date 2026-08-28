@@ -9,11 +9,16 @@ from strawberry.types import Info
 
 from phoenix.config import get_env_admins
 from phoenix.db import models
+from phoenix.server.access.resolution import (
+    get_active_project_group,
+    get_user_project_group_memberships,
+)
 from phoenix.server.api.context import Context
 from phoenix.server.api.exceptions import NotFound, Unauthorized
 from phoenix.server.api.helpers.api_key_policy import get_user_role_and_api_keys
 from phoenix.server.api.types.AuthMethod import AuthMethod
 from phoenix.server.api.types.OAuth2Grant import OAuth2Grant, can_manage_grant
+from phoenix.server.api.types.ProjectGroup import ProjectGroup, to_gql_project_group
 from phoenix.server.api.types.UserApiKey import UserApiKey
 
 from .UserRole import UserRole, to_gql_user_role
@@ -118,6 +123,50 @@ class User(Node):
         if role is None:
             raise NotFound(f"User role with id {user_role_id} not found")
         return to_gql_user_role(role)
+
+    @strawberry.field
+    async def project_groups(self, info: Info[Context, None]) -> list[ProjectGroup]:
+        """Every project group this user currently holds a role in, via
+        their held external roles -- not just the one they're viewing."""
+        async with info.context.db() as session:
+            memberships = await get_user_project_group_memberships(session, self.id)
+            if not memberships:
+                return []
+            rows = (
+                await session.scalars(
+                    select(models.ProjectGroup).where(
+                        models.ProjectGroup.id.in_(memberships.keys())
+                    )
+                )
+            ).all()
+        return [to_gql_project_group(row, caller_role=memberships[row.id]) for row in rows]
+
+    @strawberry.field
+    async def active_project_group(self, info: Info[Context, None]) -> Optional[ProjectGroup]:
+        """The project group this user is currently "viewing" -- ``None``
+        if unresolved (no groups, or 2+ groups with no selection made yet;
+        see ``phoenix.server.access.resolution``). The frontend should show
+        a group-selection interstitial in that case rather than an empty
+        project list.
+
+        The active group is read from the *requesting caller's own* session
+        cookie (see ``phoenix.server.access.context``), so this is only
+        meaningful for the caller inspecting their own viewer record --
+        looking up another account (e.g. an admin users list) always
+        resolves ``None`` here, since there is no "their browser's cookie"
+        to read.
+        """
+        if self.id != info.context.user_id:
+            return None
+        async with info.context.db() as session:
+            membership = await get_active_project_group(session, self.id)
+            if membership is None:
+                return None
+            project_group_id, role = membership
+            project_group = await session.get(models.ProjectGroup, project_group_id)
+            if project_group is None:
+                return None
+        return to_gql_project_group(project_group, caller_role=role)
 
     @strawberry.field
     async def api_keys(self, info: Info[Context, None]) -> list[UserApiKey]:

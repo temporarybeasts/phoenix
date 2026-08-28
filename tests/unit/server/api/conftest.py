@@ -29,12 +29,14 @@ from phoenix.db.types.prompts import (
 from phoenix.server.sandbox import SANDBOX_ADAPTER_METADATA
 from phoenix.server.sandbox.sync import sync_languages, sync_sandbox_providers
 from phoenix.server.types import DbSessionFactory
+from tests.unit._helpers import _get_or_create_test_project_group
 
 
 @pytest.fixture
 async def span_data_with_documents(db: DbSessionFactory) -> None:
     async with db() as session:
-        project = models.Project(name="default")
+        group = await _get_or_create_test_project_group(session)
+        project = models.Project(name="default", project_group_id=group.id)
         session.add(project)
         await session.flush()
 
@@ -1011,12 +1013,15 @@ async def assign_correctness_llm_evaluator_to_dataset(
                 path_mapping={"input": "$.input", "output": "$.output"},
             ),
             output_configs=None,
-            project=models.Project(
-                name="correctness-evaluator-project",
-                description="Project for llm evaluator",
-            ),
+            project=None,
         )
         async with db() as session:
+            group = await _get_or_create_test_project_group(session)
+            dataset_evaluator.project = models.Project(
+                name="correctness-evaluator-project",
+                description="Project for llm evaluator",
+                project_group_id=group.id,
+            )
             session.add(dataset_evaluator)
         return dataset_evaluator
 
@@ -1076,6 +1081,7 @@ async def assign_exact_match_builtin_evaluator_to_dataset(
                 project=models.Project(
                     name="exact-match-evaluator-project",
                     description="Project for builtin evaluator",
+                    project_group_id=(await _get_or_create_test_project_group(session)).id,
                 ),
             )
             session.add(dataset_evaluator)

@@ -35,7 +35,6 @@ from typing import Any, AsyncIterator
 
 import httpx
 import pytest
-import yaml
 from asgi_lifespan import LifespanManager
 from fastapi import FastAPI
 from pydantic import SecretStr
@@ -48,7 +47,6 @@ from starlette.types import ASGIApp
 
 from phoenix.db import models
 from phoenix.db.engines import aio_postgresql_engine
-from phoenix.server.access import resolution
 from phoenix.server.agents.model_selection import BuiltInProviderModelSelection
 from phoenix.server.app import create_app
 from phoenix.server.jwt_store import JwtStore
@@ -182,7 +180,14 @@ async def _seed_project_with_span(db: DbSessionFactory, *, name: str) -> tuple[i
     now = datetime.now(timezone.utc)
     otel_span_id = token_hex(8)
     async with db() as session:
-        project = models.Project(name=name)
+        # Each project gets its own dedicated group -- the granted and
+        # ungranted projects in a given test must land in genuinely
+        # different groups for the RLS isolation being proven here to mean
+        # anything (see `_grant_project_read`).
+        group = models.ProjectGroup(name=f"group-for-{name}")
+        session.add(group)
+        await session.flush()
+        project = models.Project(name=name, project_group_id=group.id)
         session.add(project)
         await session.flush()
         trace = models.Trace(
@@ -222,20 +227,25 @@ async def _grant_project_read(
     user_id: int,
     project_name: str,
 ) -> None:
-    """Grants access the only way it's now possible: an IdP group mapped to
-    the project via the declarative config file, with the user directly
-    seeded as a member of that group -- standing in for what a real OIDC
-    login would populate on `users.idp_groups`."""
-    group_name = f"group-{token_hex(4)}"
-    mapping_file = tmp_path / f"mapping-{token_hex(4)}.yaml"
-    mapping_file.write_text(
-        yaml.dump([{"idp_group": group_name, "projects": [project_name], "role": "viewer"}])
-    )
-    monkeypatch.setenv("PHOENIX_ACCESS_CONTROL_GROUP_MAPPING_FILE", str(mapping_file))
-    resolution._mapping_cache = None
+    """Grants access the only way it's now possible: an external role mapped
+    to the project's own group via a persisted `ExternalRoleProjectGroupMapping`
+    row, with the user directly seeded as a holder of that external role --
+    standing in for what a real OIDC login would populate on
+    `users.idp_groups`. The user ends up a member of exactly one group, so
+    it's their implicit active group with no cookie/ContextVar needed."""
+    external_role = f"role-{token_hex(4)}"
     async with db() as session:
+        project_group_id = await session.scalar(
+            select(models.Project.project_group_id).where(models.Project.name == project_name)
+        )
+        assert project_group_id is not None
+        session.add(
+            models.ExternalRoleProjectGroupMapping(
+                external_role=external_role, project_group_id=project_group_id, role="VIEWER"
+            )
+        )
         await session.execute(
-            update(models.User).where(models.User.id == user_id).values(idp_groups=[group_name])
+            update(models.User).where(models.User.id == user_id).values(idp_groups=[external_role])
         )
 
 
