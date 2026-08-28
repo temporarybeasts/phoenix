@@ -82,11 +82,28 @@ async def _get_record_by_id(
     return cast(Optional[_RecordT], await session.scalar(select(table).filter_by(id=id_)))
 
 
+async def _get_or_create_test_project_group(
+    session: AsyncSession, name: str = "test-project-group"
+) -> models.ProjectGroup:
+    """Every project now requires a `project_group_id` -- tests that don't
+    care which group a project lands in share one lazily-created group per
+    test DB, rather than every test call site having to construct one."""
+    group = await session.scalar(select(models.ProjectGroup).filter_by(name=name))
+    if group is None:
+        group = models.ProjectGroup(name=name)
+        session.add(group)
+        await session.flush()
+    return group
+
+
 async def _add_project(
     session: AsyncSession,
     name: Optional[str] = None,
+    project_group: Optional[models.ProjectGroup] = None,
 ) -> models.Project:
-    project = models.Project(name=name or token_hex(4))
+    if project_group is None:
+        project_group = await _get_or_create_test_project_group(session)
+    project = models.Project(name=name or token_hex(4), project_group_id=project_group.id)
     session.add(project)
     await session.flush()
     assert isinstance(await _get_record_by_id(session, models.Project, project.id), models.Project)

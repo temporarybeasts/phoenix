@@ -88,6 +88,49 @@ export function useViewerCanDeleteProjectAnnotations() {
   return useIsAdminOrAuthDisabled();
 }
 
+/**
+ * The project group the viewer is currently "viewing" -- null if
+ * unresolved (no groups, or 2+ groups with no selection made yet). A
+ * newly created project lands in this group.
+ */
+export function useActiveProjectGroup() {
+  const { viewer } = useViewer();
+  return viewer?.activeProjectGroup ?? null;
+}
+
+/**
+ * Every project group the viewer currently holds a role in, via their held
+ * external roles -- not just the one they're viewing. Empty for a
+ * zero-group viewer.
+ */
+export function useProjectGroups() {
+  const { viewer } = useViewer();
+  return viewer?.projectGroups ?? [];
+}
+
+/**
+ * Returns true if the viewer can create a project right now. Mirrors
+ * `create_project` server-side: project-group RBAC only applies at all
+ * when some configured OAuth2 client actually captures an IdP groups claim
+ * (`projectGroupRbacEnabled`) -- otherwise (auth disabled, or auth enabled
+ * but no IdP groups configured anywhere, e.g. plain basic-auth) there's no
+ * external-role mapping for anyone, IdP or local, and creation always
+ * lands in the default project group. When RBAC *is* in use, creation
+ * requires a resolved active group where the viewer holds MEMBER/ADMIN --
+ * a global ADMIN account role does not bypass this (per-group role and
+ * account role are different things).
+ */
+export function useCanCreateProject() {
+  const activeProjectGroup = useActiveProjectGroup();
+  if (!window.Config.authenticationEnabled || !window.Config.projectGroupRbacEnabled) {
+    return true;
+  }
+  return (
+    activeProjectGroup != null &&
+    (activeProjectGroup.role === "MEMBER" || activeProjectGroup.role === "ADMIN")
+  );
+}
+
 export function ViewerProvider({
   query,
   children,
@@ -108,6 +151,16 @@ export function ViewerProvider({
             name
           }
           authMethod
+          activeProjectGroup {
+            id
+            name
+            role
+          }
+          projectGroups {
+            id
+            name
+            role
+          }
           ...ViewerAPIKeysListFragment
           ...AuthorizedApplicationsCardFragment
         }

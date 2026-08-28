@@ -148,6 +148,7 @@
               mcpServerEnabled: Boolean("{{mcp_server_enabled}}" == "True"),
               mcpCodeModeEnabled: Boolean("{{mcp_code_mode_enabled}}" == "True"),
               authErrorMessages: {{auth_error_messages | tojson}},
+              projectGroupRbacEnabled: Boolean("{{project_group_rbac_enabled}}" == "True"),
           }),
           writable: false
       });

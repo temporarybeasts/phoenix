@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import os
 from secrets import token_hex
-from typing import Any
+from typing import Any, AsyncIterator
 
 import pytest
 from fastmcp import Client
@@ -53,21 +53,20 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-async def _grant_project_access(app: _AppInfo, *, user_id: int, groups: list[str]) -> None:
-    """Sets ``users.idp_groups`` directly against the running app's own
-    database -- standing in for what a real OIDC login would populate,
-    without standing up a live IdP. The package-scoped app's
-    ``PHOENIX_ACCESS_CONTROL_GROUP_MAPPING_FILE`` (see
-    ``_env_access_control`` in conftest.py) maps these group names to the
-    ``mcp-sql-test-project-{a,b}-*`` project globs the ``_two_projects``
-    fixture below names its projects with, so project access is resolved
-    live from this list -- there is no ``project_grants`` row to insert
-    anymore. Wholesale replace, matching ``sync_idp_groups``'s own
-    semantics.
+async def _grant_project_access(
+    app: _AppInfo, *, user_id: int, project_group_ids: list[int]
+) -> None:
+    """Grants access to each of ``project_group_ids`` via a freshly-minted
+    external role mapped to it (an ``ExternalRoleProjectGroupMapping`` row),
+    and seeds ``users.idp_groups`` with those roles -- standing in for what
+    a real OIDC login plus an external onboarding process populating the
+    mapping table would do, without standing up a live IdP. Wholesale
+    replace on ``idp_groups``, matching ``sync_idp_groups``'s own semantics.
     """
     sql_database_url = app.env[ENV_PHOENIX_SQL_DATABASE_URL]
     schema = app.env.get(ENV_PHOENIX_SQL_DATABASE_SCHEMA)
     engine = create_async_engine(get_async_db_url(sql_database_url), poolclass=NullPool)
+    external_roles = [f"role-{token_hex(4)}" for _ in project_group_ids]
     try:
         async with engine.begin() as conn:
             if schema:
@@ -75,9 +74,18 @@ async def _grant_project_access(app: _AppInfo, *, user_id: int, groups: list[str
                 # schema (see _helpers.py's _random_schema) -- without this,
                 # the update would silently target `public` instead.
                 await conn.execute(text(f"SET search_path TO {schema}"))
+            for role, group_id in zip(external_roles, project_group_ids):
+                await conn.execute(
+                    text(
+                        "INSERT INTO external_role_project_group_mappings "
+                        "(external_role, project_group_id, role) "
+                        "VALUES (:role, :group_id, 'VIEWER')"
+                    ),
+                    {"role": role, "group_id": group_id},
+                )
             await conn.execute(
                 text("UPDATE users SET idp_groups = CAST(:groups AS JSONB) WHERE id = :user_id"),
-                {"groups": json.dumps(groups), "user_id": user_id},
+                {"groups": json.dumps(external_roles), "user_id": user_id},
             )
     finally:
         await engine.dispose()
@@ -105,26 +113,87 @@ async def _mint_token_for_user(app: _AppInfo, user: _User, /) -> str:
 _PROBE_SQL = "SELECT project_rowid, count(*) AS n FROM traces GROUP BY project_rowid"
 
 
+async def _assign_distinct_groups(app: _AppInfo, project_ids: list[int]) -> list[int]:
+    """OTLP ingest auto-creates projects with no group-selection mechanism
+    of its own -- they always land in the well-known default project group
+    (see `phoenix.db.insertion.span.insert_span`). Reassigns each of
+    ``project_ids`` to its own freshly-created, otherwise-empty group, so
+    granting access to one project's group here can't accidentally also
+    grant the other (which sharing the default group would do)."""
+    sql_database_url = app.env[ENV_PHOENIX_SQL_DATABASE_URL]
+    schema = app.env.get(ENV_PHOENIX_SQL_DATABASE_SCHEMA)
+    engine = create_async_engine(get_async_db_url(sql_database_url), poolclass=NullPool)
+    group_ids = []
+    try:
+        async with engine.begin() as conn:
+            if schema:
+                await conn.execute(text(f"SET search_path TO {schema}"))
+            for project_id in project_ids:
+                group_id = await conn.scalar(
+                    text("INSERT INTO project_groups (name) VALUES (:name) RETURNING id"),
+                    {"name": f"mcp-sql-test-group-{token_hex(8)}"},
+                )
+                await conn.execute(
+                    text("UPDATE projects SET project_group_id = :group_id WHERE id = :id"),
+                    {"group_id": group_id, "id": project_id},
+                )
+                group_ids.append(group_id)
+    finally:
+        await engine.dispose()
+    return group_ids
+
+
 @pytest.fixture
-def _two_projects(_app: _AppInfo) -> tuple[int, int]:
-    """Two distinct projects, each with one trace, as plain numeric ids.
+def _two_projects(_app: _AppInfo) -> tuple[int, int, int, int]:
+    """Two distinct projects (each with one trace) and their own dedicated
+    project groups, as plain numeric ids: ``(project_a_id, project_b_id,
+    group_a_id, group_b_id)``.
 
     ``_insert_spans`` calls ``asyncio.run`` internally, so it must run from a
     sync fixture, not from inside an already-running async test -- calling it
     directly in an ``async def`` test raises "asyncio.run() cannot be called
     from a running event loop" (found by actually running this, not assumed).
+    The group reassignment below has the same constraint, so it also runs
+    via `asyncio.run` from this sync fixture.
     """
-    # Deterministic prefixes, not the default random hex name -- these must
-    # match the globs in `_env_access_control` (conftest.py) so
-    # `_grant_project_access` (which sets `idp_groups`, not a per-project
-    # grant row) can actually resolve to these specific projects.
+    import asyncio
+
     project_a = _insert_spans(_app, 1, project_name=f"mcp-sql-test-project-a-{token_hex(8)}")[
         0
     ].trace.project
     project_b = _insert_spans(_app, 1, project_name=f"mcp-sql-test-project-b-{token_hex(8)}")[
         0
     ].trace.project
-    return int(project_a.id.node_id), int(project_b.id.node_id)
+    project_a_id, project_b_id = int(project_a.id.node_id), int(project_b.id.node_id)
+    group_a_id, group_b_id = asyncio.run(
+        _assign_distinct_groups(_app, [project_a_id, project_b_id])
+    )
+    return project_a_id, project_b_id, group_a_id, group_b_id
+
+
+@pytest.fixture(autouse=True)
+async def _cleanup_project_group_mappings(_app: _AppInfo) -> AsyncIterator[None]:
+    """This file is the only one in the shared package-scoped ``_app``'s
+    Postgres schema that ever inserts into
+    ``external_role_project_group_mappings`` -- once any row exists there,
+    project-group RBAC is "in use" for the rest of that shared app's
+    lifetime (see ``resolution._project_group_rbac_in_use``), which would
+    otherwise silently restrict every other, unrelated test's group-less
+    MEMBER users (elsewhere in this package) for the remainder of the whole
+    suite's run, well past this file's own tests. Delete whatever this
+    test inserted so later, unrelated tests see an RBAC-inactive
+    deployment again, matching their own assumptions."""
+    yield
+    sql_database_url = _app.env[ENV_PHOENIX_SQL_DATABASE_URL]
+    schema = _app.env.get(ENV_PHOENIX_SQL_DATABASE_SCHEMA)
+    engine = create_async_engine(get_async_db_url(sql_database_url), poolclass=NullPool)
+    try:
+        async with engine.begin() as conn:
+            if schema:
+                await conn.execute(text(f"SET search_path TO {schema}"))
+            await conn.execute(text("DELETE FROM external_role_project_group_mappings"))
+    finally:
+        await engine.dispose()
 
 
 class TestMcpSqlProjectIsolation:
@@ -132,13 +201,13 @@ class TestMcpSqlProjectIsolation:
         self,
         _app: _AppInfo,
         _get_user: _GetUser,
-        _two_projects: tuple[int, int],
+        _two_projects: tuple[int, int, int, int],
     ) -> None:
-        project_a_id, project_b_id = _two_projects
+        project_a_id, project_b_id, group_a_id, _group_b_id = _two_projects
 
         member = _get_user(_app, _MEMBER)
         member_id = int(GlobalID.from_id(member.gid).node_id)
-        await _grant_project_access(_app, user_id=member_id, groups=["mcp-sql-test-project-a"])
+        await _grant_project_access(_app, user_id=member_id, project_group_ids=[group_a_id])
         token = await _mint_token_for_user(_app, member)
 
         envelope = await _call_execute_sql(_app, token, _PROBE_SQL)
@@ -155,9 +224,9 @@ class TestMcpSqlProjectIsolation:
         self,
         _app: _AppInfo,
         _get_user: _GetUser,
-        _two_projects: tuple[int, int],
+        _two_projects: tuple[int, int, int, int],
     ) -> None:
-        project_a_id, project_b_id = _two_projects
+        project_a_id, project_b_id, _group_a_id, _group_b_id = _two_projects
 
         admin = _get_user(_app, _ADMIN)
         token = await _mint_token_for_user(_app, admin)
@@ -168,28 +237,34 @@ class TestMcpSqlProjectIsolation:
         assert project_a_id in visible_project_ids
         assert project_b_id in visible_project_ids
 
-    async def test_member_granted_both_projects_sees_both(
+    async def test_member_in_two_groups_with_no_active_selection_sees_neither(
         self,
         _app: _AppInfo,
         _get_user: _GetUser,
-        _two_projects: tuple[int, int],
+        _two_projects: tuple[int, int, int, int],
     ) -> None:
-        """Isolation tracks the grant, not a blanket per-role restriction --
-        the same member who was denied project B above sees it once granted.
+        """A user who's a member of 2+ project groups must explicitly pick
+        which one they're viewing (see `phoenix.server.access.resolution`).
+        A bearer-token/MCP caller has no browser to show that picker in, and
+        sends no active-project-group cookie -- so it resolves to no access
+        at all, fail-closed, rather than the union of every held group. This
+        replaces the old model's `test_member_granted_both_projects_sees_both`,
+        whose premise (holding two groups grants the union) no longer holds
+        under the new one-group-at-a-time viewing model.
         """
-        project_a_id, project_b_id = _two_projects
+        project_a_id, project_b_id, group_a_id, group_b_id = _two_projects
 
         member = _get_user(_app, _MEMBER)
         member_id = int(GlobalID.from_id(member.gid).node_id)
         await _grant_project_access(
             _app,
             user_id=member_id,
-            groups=["mcp-sql-test-project-a", "mcp-sql-test-project-b"],
+            project_group_ids=[group_a_id, group_b_id],
         )
         token = await _mint_token_for_user(_app, member)
 
         envelope = await _call_execute_sql(_app, token, _PROBE_SQL)
         visible_project_ids = {row[0] for row in envelope["rows"]}
 
-        assert project_a_id in visible_project_ids
-        assert project_b_id in visible_project_ids
+        assert project_a_id not in visible_project_ids
+        assert project_b_id not in visible_project_ids
