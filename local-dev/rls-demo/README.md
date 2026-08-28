@@ -296,3 +296,47 @@ check on this path (unlike the annotation mutations below).
   Phoenix's plain-path role mapping only reads the first element — see
   the note in step 1 above if you add more groups to a user and their
   role unexpectedly resets to VIEWER.
+
+## 5. Clean up
+
+Stop Phoenix first (`Ctrl-C` the `make dev-backend` process), then tear
+down both stacks and their state:
+
+```sh
+docker compose -f local-dev/rls-demo/docker-compose.yml down -v
+docker compose -f local-dev/keycloak/docker-compose.yml down
+```
+
+- The `-v` on the `rls-demo` stack is required — it drops the named
+  `rls_demo_database_data` volume, which is the only thing holding the
+  Postgres data directory (and with it the `phoenix_scoped` role, the RLS
+  policies, the Alembic migration history, and every seeded row —
+  `project_groups`, `external_role_project_group_mappings`, the demo
+  projects/spans). Without `-v` the next `up` reuses the same volume and
+  skips re-running migrations against a fresh database.
+- The `keycloak` stack has no named volume — it runs `start-dev` with
+  only the read-only `realm-export.json` bind-mounted in, so a plain
+  `down` (no `-v` needed) already discards all realm state. That includes
+  the four users manually created via the admin console/API in step 1
+  (`erin-nogroup`, `faye-member`, `grace-groupadmin`,
+  `henry-groupadmin`) — they are **not** in `realm-export.json`, so they
+  will not come back on the next `up` and must be recreated by hand
+  again (or added to `realm-export.json` first, see that directory's
+  README on realm-import-only-runs-once).
+- Remove the untracked env file and any exported shell state from step
+  2/3, since `phoenix.env` holds the seed API key and the local
+  `PHOENIX_SQL_DATABASE_URL`, both now pointing at a database that no
+  longer exists:
+  ```sh
+  rm local-dev/rls-demo/phoenix.env
+  unset PHOENIX_API_KEY PHOENIX_SQL_DATABASE_URL
+  ```
+  (or simply start a fresh shell for the next run — `phoenix.env` was
+  never sourced into anything persistent beyond the current shell's
+  environment).
+
+After this, both `docker volume ls` and `docker compose -f
+local-dev/rls-demo/docker-compose.yml ps` /
+`docker compose -f local-dev/keycloak/docker-compose.yml ps` should show
+nothing left for either stack, and re-running step 1 starts from the
+same blank-slate realm-export-only state as a first-time setup.
