@@ -155,11 +155,6 @@ check on this path (unlike the annotation mutations below).
 
 ## 4. Test matrix
 
-`rls_demo_tests.ipynb` in this directory is a scripted version of steps 1-4
-below (including the optional/not-run-manually checks) -- it drives Keycloak
-login for each demo user over HTTP instead of a browser, so it can run
-unattended. See its first cell for what it does and doesn't cover.
-
 - [x] **Admin sees everything**: log in as `alice-admin`. Project list
       shows both `demo-team-alpha` and `demo-team-beta` (ADMIN sets
       `app.bypass_rls`, see `_set_db_isolation_guards`). Verified live
@@ -277,64 +272,6 @@ unattended. See its first cell for what it does and doesn't cover.
       access are both scoped to the *active* group, not the union of
       held groups. Verified live.
 
-## 5. Fake chat app: register a new project and stream live traces
-
-`local-dev/rls-demo/chat-app/` is a small synthetic "chat app" runnable
-as a Docker container -- each instance is one fake app identity that
-streams synthetic OTLP traces (`chat_app.py`) into a Phoenix project on
-a loop, demonstrating both reusing an already-mapped demo project and
-onboarding a brand-new one live, without re-running `seed_projects.py`.
-
-1. Build the image once:
-   ```sh
-   docker build -t rls-demo-chat-app local-dev/rls-demo/chat-app
-   ```
-2. Mint a dedicated API key per chat-app identity, reusing the same
-   admin-login + `/v1/user/api_keys` flow from step 3 above (just give
-   each a distinct `name`, e.g. `"chat-app-alpha-bot"`) -- one key per
-   instance, so each shows up separately in the admin UI's API keys
-   list.
-3. Run an instance targeting an *existing*, already-mapped project:
-   ```sh
-   docker run --rm --name chat-app-alpha \
-     -e CHAT_APP_NAME=alpha-bot \
-     -e PHOENIX_PROJECT_NAME=demo-team-alpha \
-     -e PHOENIX_API_KEY=<key> \
-     rls-demo-chat-app
-   ```
-   Traces stream straight into `demo-team-alpha` -- log in as
-   `bob-user` and watch new spans keep appearing under Traces with no
-   extra step.
-4. Mint a second key and run a second instance under a brand-new
-   name/project:
-   ```sh
-   docker run --rm --name chat-app-gamma \
-     -e CHAT_APP_NAME=gamma-bot \
-     -e PHOENIX_PROJECT_NAME=demo-team-gamma \
-     -e PHOENIX_API_KEY=<key2> \
-     rls-demo-chat-app
-   ```
-   Log in as `alice-admin` and confirm `demo-team-gamma` appears
-   (global RLS bypass, default project group) while it's invisible to
-   every other demo user -- nothing has mapped it to a group yet.
-5. Register the new project into its own group, the same onboarding
-   step `seed_projects.py` performs at setup time for the two
-   pre-baked demo projects, now done live and ad hoc:
-   ```sh
-   uv run local-dev/rls-demo/register_project.py demo-team-gamma demo-group-gamma
-   ```
-6. Multiple instances just mean distinct `--name`/`CHAT_APP_NAME`/
-   `PHOENIX_API_KEY` values -- e.g. run two identities both pointed at
-   `PHOENIX_PROJECT_NAME=demo-team-alpha` and confirm both show up as
-   separate API keys in the admin UI while interleaving spans into the
-   same project.
-
-`chat-app/docker-compose.yml` is a convenience for `docker compose
-build`/running a single instance; multiple named instances are run
-directly against the built image with `docker run`, as above, since
-compose services aren't a natural fit for "spin up N of these with
-different names."
-
 ## Notes
 
 - Access is recomputed on every check from `users.idp_groups` (set at
@@ -359,55 +296,3 @@ different names."
   Phoenix's plain-path role mapping only reads the first element — see
   the note in step 1 above if you add more groups to a user and their
   role unexpectedly resets to VIEWER.
-
-## 6. Clean up
-
-Stop Phoenix first (`Ctrl-C` the `make dev-backend` process), then tear
-down both stacks and their state:
-
-```sh
-docker compose -f local-dev/rls-demo/docker-compose.yml down -v
-docker compose -f local-dev/keycloak/docker-compose.yml down
-```
-
-If any chat-app containers from section 5 are still running, stop them
-and remove the built image too:
-
-```sh
-docker rm -f $(docker ps -aq --filter "name=chat-app-") 2>/dev/null
-docker rmi rls-demo-chat-app
-```
-
-- The `-v` on the `rls-demo` stack is required — it drops the named
-  `rls_demo_database_data` volume, which is the only thing holding the
-  Postgres data directory (and with it the `phoenix_scoped` role, the RLS
-  policies, the Alembic migration history, and every seeded row —
-  `project_groups`, `external_role_project_group_mappings`, the demo
-  projects/spans). Without `-v` the next `up` reuses the same volume and
-  skips re-running migrations against a fresh database.
-- The `keycloak` stack has no named volume — it runs `start-dev` with
-  only the read-only `realm-export.json` bind-mounted in, so a plain
-  `down` (no `-v` needed) already discards all realm state. That includes
-  the four users manually created via the admin console/API in step 1
-  (`erin-nogroup`, `faye-member`, `grace-groupadmin`,
-  `henry-groupadmin`) — they are **not** in `realm-export.json`, so they
-  will not come back on the next `up` and must be recreated by hand
-  again (or added to `realm-export.json` first, see that directory's
-  README on realm-import-only-runs-once).
-- Remove the untracked env file and any exported shell state from step
-  2/3, since `phoenix.env` holds the seed API key and the local
-  `PHOENIX_SQL_DATABASE_URL`, both now pointing at a database that no
-  longer exists:
-  ```sh
-  rm local-dev/rls-demo/phoenix.env
-  unset PHOENIX_API_KEY PHOENIX_SQL_DATABASE_URL
-  ```
-  (or simply start a fresh shell for the next run — `phoenix.env` was
-  never sourced into anything persistent beyond the current shell's
-  environment).
-
-After this, both `docker volume ls` and `docker compose -f
-local-dev/rls-demo/docker-compose.yml ps` /
-`docker compose -f local-dev/keycloak/docker-compose.yml ps` should show
-nothing left for either stack, and re-running step 1 starts from the
-same blank-slate realm-export-only state as a first-time setup.

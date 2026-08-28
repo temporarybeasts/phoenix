@@ -32,6 +32,7 @@ from starlette.datastructures import URL
 from typing_extensions import TypeAlias, get_args
 
 from phoenix.utilities.logging import log_a_list
+from phoenix.utilities.re import parse_env_headers
 
 if TYPE_CHECKING:
     from phoenix.db.models import SandboxBackendType
@@ -62,6 +63,12 @@ external skills.
 """
 ENV_PHOENIX_HOST_ROOT_PATH = "PHOENIX_HOST_ROOT_PATH"
 ENV_NOTEBOOK_ENV = "PHOENIX_NOTEBOOK_ENV"
+ENV_PHOENIX_CLIENT_HEADERS = "PHOENIX_CLIENT_HEADERS"
+"""
+The headers to include in Phoenix client requests.
+Note: This overrides OTEL_EXPORTER_OTLP_HEADERS in the case where
+phoenix.trace instrumentors are used.
+"""
 ENV_PHOENIX_COLLECTOR_ENDPOINT = "PHOENIX_COLLECTOR_ENDPOINT"
 """
 The endpoint traces and evals are sent to. This must be set if the Phoenix
@@ -420,21 +427,6 @@ first system user. This key must be at least 32 characters long, include at leas
 one lowercase letter, and must be different from PHOENIX_SECRET. Additionally, it must not be set
 if PHOENIX_SECRET is not configured.
 """
-ENV_PHOENIX_ACCESS_CONTROL_GROUP_MAPPING_FILE = "PHOENIX_ACCESS_CONTROL_GROUP_MAPPING_FILE"
-"""
-Fork-only: path to a YAML file declaratively mapping IdP groups to
-project grants, e.g.::
-
-    - idp_group: "phoenix-proj-fraud-admins"
-      projects: ["fraud-*"]
-      permission: "project:manage-access"
-    - idp_group: "phoenix-proj-fraud-users"
-      projects: ["fraud-*"]
-      permission: "project:read"
-
-Loaded once at startup. See ``phoenix.server.access`` for the SSO/RBAC
-fork's project-grant resolution this feeds -- not part of upstream Phoenix.
-"""
 ENV_PHOENIX_ENABLE_STRONG_PASSWORD_POLICY = "PHOENIX_ENABLE_STRONG_PASSWORD_POLICY"
 """
 Whether to enable the strong password policy. When enabled, passwords must be at least 12
@@ -448,6 +440,7 @@ explicitly set. Note that changing this value will have no effect if the default
 record already exists in the database. In such cases, the default admin password must
 be updated manually in the application.
 """
+ENV_PHOENIX_API_KEY = "PHOENIX_API_KEY"
 ENV_PHOENIX_USE_SECURE_COOKIES = "PHOENIX_USE_SECURE_COOKIES"
 ENV_PHOENIX_COOKIES_PATH = "PHOENIX_COOKIES_PATH"
 ENV_PHOENIX_ACCESS_TOKEN_EXPIRY_MINUTES = "PHOENIX_ACCESS_TOKEN_EXPIRY_MINUTES"
@@ -1431,12 +1424,12 @@ def get_env_phoenix_use_secure_cookies() -> bool:
     return _bool_val(ENV_PHOENIX_USE_SECURE_COOKIES, False)
 
 
+def get_env_phoenix_api_key() -> Optional[str]:
+    return getenv(ENV_PHOENIX_API_KEY)
+
+
 def get_env_phoenix_agents_collector_endpoint() -> Optional[str]:
     return getenv(ENV_PHOENIX_AGENTS_COLLECTOR_ENDPOINT)
-
-
-def get_env_access_control_group_mapping_file() -> Optional[str]:
-    return getenv(ENV_PHOENIX_ACCESS_CONTROL_GROUP_MAPPING_FILE)
 
 
 def get_env_phoenix_agents_collector_api_key() -> Optional[str]:
@@ -1842,7 +1835,7 @@ class OAuth2ClientConfig:
         if self.client_assertion_file and not os.path.isabs(self.client_assertion_file):
             # Enforced here so the rule holds however the path arrived. A relative path would
             # resolve against the working directory, which nothing about this deployment
-            # pins — and requiring it is only possible now, since tightening the contract
+            # pins — and requiring it now is only possible now, since tightening the contract
             # after a release would break anyone who had relied on the looser one.
             source = (
                 f"named by {self.client_assertion_file_env_var}"
@@ -3481,6 +3474,15 @@ def get_env_max_spans_queue_size() -> int:
             f"{max_size}. Value must be a positive integer."
         )
     return max_size
+
+
+def get_env_client_headers() -> dict[str, str]:
+    headers = parse_env_headers(getenv(ENV_PHOENIX_CLIENT_HEADERS))
+    if (api_key := get_env_phoenix_api_key()) and "authorization" not in [
+        k.lower() for k in headers
+    ]:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
 
 
 def get_env_root_url() -> URL:
