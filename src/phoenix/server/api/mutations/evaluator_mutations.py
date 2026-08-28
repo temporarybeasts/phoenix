@@ -28,6 +28,7 @@ from phoenix.db.types.annotation_configs import (
 )
 from phoenix.db.types.identifier import Identifier
 from phoenix.db.types.identifier import Identifier as IdentifierModel
+from phoenix.server.access.resolution import get_default_project_group_id
 from phoenix.server.api.auth import IsLocked, IsNotReadOnly, IsNotViewer
 from phoenix.server.api.context import Context
 from phoenix.server.api.evaluators import (
@@ -231,7 +232,8 @@ async def _generate_unique_evaluator_name(
     raise RuntimeError(f"Failed to generate unique evaluator name after {max_attempts} attempts")
 
 
-def _get_project_for_dataset_evaluator(
+async def _get_project_for_dataset_evaluator(
+    session: AsyncSession,
     *,
     dataset_name: str,
     dataset_evaluator_name: str,
@@ -243,6 +245,9 @@ def _get_project_for_dataset_evaluator(
         description=(
             f"Traces for dataset evaluator: {dataset_evaluator_name} on dataset: {dataset_name}"
         ),
+        # System-managed, not created by a "viewing" user -- lands in the
+        # default group, same as OTLP-ingest auto-created projects.
+        project_group_id=await get_default_project_group_id(session),
     )
 
 
@@ -497,7 +502,8 @@ class EvaluatorMutationMixin:
                     output_configs=output_configs,
                     input_mapping=input.input_mapping.to_orm(),
                     user_id=user_id,
-                    project=_get_project_for_dataset_evaluator(
+                    project=await _get_project_for_dataset_evaluator(
+                        session,
                         dataset_name=dataset_name,
                         dataset_evaluator_name=str(evaluator_name),
                     ),
@@ -1042,7 +1048,8 @@ class EvaluatorMutationMixin:
                     output_configs=output_configs,
                     description=input.description,
                     user_id=user_id,
-                    project=_get_project_for_dataset_evaluator(
+                    project=await _get_project_for_dataset_evaluator(
+                        session,
                         dataset_name=dataset_name,
                         dataset_evaluator_name=str(name),
                     ),
@@ -1233,7 +1240,8 @@ class EvaluatorMutationMixin:
                     output_configs=output_configs,
                     description=input.description,
                     user_id=user_id,
-                    project=_get_project_for_dataset_evaluator(
+                    project=await _get_project_for_dataset_evaluator(
+                        session,
                         dataset_name=dataset_name,
                         dataset_evaluator_name=str(name),
                     ),

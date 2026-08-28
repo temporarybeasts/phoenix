@@ -6,7 +6,9 @@
     { "name": "phoenix-admins" },
     { "name": "phoenix-users" },
     { "name": "demo-project-alpha" },
-    { "name": "demo-project-beta" }
+    { "name": "demo-project-beta" },
+    { "name": "demo-project-alpha-admin" },
+    { "name": "demo-project-beta-admin" }
   ],
   "clients": [
     {
@@ -78,6 +80,46 @@
       "lastName": "User",
       "credentials": [{ "type": "password", "value": "password", "temporary": false }],
       "groups": ["/phoenix-users", "/demo-project-beta"]
+    },
+    {
+      "username": "erin-nogroup",
+      "enabled": true,
+      "email": "erin@example.com",
+      "emailVerified": true,
+      "firstName": "Erin",
+      "lastName": "Nogroup",
+      "credentials": [{ "type": "password", "value": "password", "temporary": false }],
+      "groups": ["/phoenix-users"]
+    },
+    {
+      "username": "faye-member",
+      "enabled": true,
+      "email": "faye@example.com",
+      "emailVerified": true,
+      "firstName": "Faye",
+      "lastName": "Member",
+      "credentials": [{ "type": "password", "value": "password", "temporary": false }],
+      "groups": ["/phoenix-users", "/demo-project-alpha", "/demo-project-beta"]
+    },
+    {
+      "username": "grace-groupadmin",
+      "enabled": true,
+      "email": "grace@example.com",
+      "emailVerified": true,
+      "firstName": "Grace",
+      "lastName": "Groupadmin",
+      "credentials": [{ "type": "password", "value": "password", "temporary": false }],
+      "groups": ["/phoenix-users", "/demo-project-alpha-admin"]
+    },
+    {
+      "username": "henry-groupadmin",
+      "enabled": true,
+      "email": "henry@example.com",
+      "emailVerified": true,
+      "firstName": "Henry",
+      "lastName": "Groupadmin",
+      "credentials": [{ "type": "password", "value": "password", "temporary": false }],
+      "groups": ["/phoenix-users", "/demo-project-alpha-admin", "/demo-project-beta-admin"]
     }
   ]
 }
