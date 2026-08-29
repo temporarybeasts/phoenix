@@ -407,6 +407,21 @@ first system user. This key must be at least 32 characters long, include at leas
 one lowercase letter, and must be different from PHOENIX_SECRET. Additionally, it must not be set
 if PHOENIX_SECRET is not configured.
 """
+ENV_PHOENIX_ACCESS_CONTROL_GROUP_MAPPING_FILE = "PHOENIX_ACCESS_CONTROL_GROUP_MAPPING_FILE"
+"""
+Fork-only: path to a YAML file declaratively mapping IdP groups to
+project grants, e.g.::
+
+    - idp_group: "phoenix-proj-fraud-admins"
+      projects: ["fraud-*"]
+      permission: "project:manage-access"
+    - idp_group: "phoenix-proj-fraud-users"
+      projects: ["fraud-*"]
+      permission: "project:read"
+
+Loaded once at startup. See ``phoenix.server.access`` for the SSO/RBAC
+fork's project-grant resolution this feeds -- not part of upstream Phoenix.
+"""
 ENV_PHOENIX_ENABLE_STRONG_PASSWORD_POLICY = "PHOENIX_ENABLE_STRONG_PASSWORD_POLICY"
 """
 Whether to enable the strong password policy. When enabled, passwords must be at least 12
@@ -1410,6 +1425,10 @@ def get_env_phoenix_api_key() -> Optional[str]:
 
 def get_env_phoenix_agents_collector_endpoint() -> Optional[str]:
     return getenv(ENV_PHOENIX_AGENTS_COLLECTOR_ENDPOINT)
+
+
+def get_env_access_control_group_mapping_file() -> Optional[str]:
+    return getenv(ENV_PHOENIX_ACCESS_CONTROL_GROUP_MAPPING_FILE)
 
 
 def get_env_phoenix_agents_collector_api_key() -> Optional[str]:
