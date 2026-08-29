@@ -1,0 +1,187 @@
+name: RBAC fork nightly rebase
+
+# Stage 3 of the SSO/RBAC fork plan: keeps `rbac-fork` rebased onto
+# Arize-ai/phoenix's `main` so drift is caught in a ~1-day window instead
+# of accumulating (the upstream access-control-prototype branch this fork
+# initially considered porting drifted 688 commits before anyone looked).
+#
+# `rbac-fork` is this repo's default branch (GitHub only reads
+# `on: schedule` triggers from the default branch), so this workflow lives
+# and runs directly on it. There used to be a separate `main` kept as a
+# supposed mirror of upstream solely so a default branch would exist for
+# the schedule trigger -- dropped because nothing actually synced it, so
+# it silently drifted (85 commits behind by the time this was caught) with
+# no functional purpose. Diff against upstream directly via the `upstream`
+# remote this workflow already fetches, e.g. `git diff upstream/main`.
+
+on:
+  schedule:
+    - cron: "0 10 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  UPSTREAM_REPO: https://github.com/Arize-ai/phoenix.git
+  PATCH_BRANCH: rbac-fork
+  CONFLICT_BRANCH: rbac-fork-conflict
+
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout rbac-fork
+        uses: actions/checkout@v4
+        with:
+          # Pinned explicitly (rather than relying on the default trigger
+          # ref) so a workflow_dispatch run manually triggered from some
+          # other branch still operates on rbac-fork, not that branch.
+          ref: ${{ env.PATCH_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.REBASE_BOT_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "rbac-fork-bot"
+          git config user.email "rbac-fork-bot@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM_REPO"
+          git fetch upstream main
+
+      - name: Attempt rebase onto upstream/main
+        id: rebase
+        run: |
+          if git rebase upstream/main; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            git rebase --abort
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push rebased branch
+        if: steps.rebase.outputs.conflict == 'false'
+        run: git push --force-with-lease origin "$PATCH_BRANCH"
+
+      - name: Install uv
+        if: steps.rebase.outputs.conflict == 'false'
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          # Must match [tool.uv].required-version in pyproject.toml, or uv
+          # refuses to run at all (this is what broke the first run: `@v3`
+          # + `version: latest` installed 0.12.5 against a repo pinned to
+          # 0.12.1). Mirrors python-CI.yml's own setup-uv step.
+          #
+          # This file lives on `main` and isn't touched by the nightly
+          # rebase, so it drifts whenever upstream bumps required-version on
+          # `main` (as happened going from 0.12.1 to 0.12.5) -- re-sync this
+          # pin with pyproject.toml's required-version whenever the smoke
+          # check fails with "Required uv version ... does not match".
+          version: "0.12.5"
+
+      - name: Post-rebase smoke check
+        if: steps.rebase.outputs.conflict == 'false'
+        timeout-minutes: 10
+        run: |
+          # Stage 3 placeholder: no fork-specific code exists yet. This is
+          # deliberately NOT the full pytest suite -- the previous attempt
+          # ran all 10,549 unit tests via tox (python-CI.yml's own job)
+          # and only reached 61% before this step's timeout, because the
+          # default `ubuntu-latest` runner only has 2 cores (`-n auto`
+          # correctly detected "2/2 workers"). That's full CI's job on
+          # CI's own runner sizing, not a nightly rebase smoke check.
+          #
+          # Instead: confirm the package installs, core modules import,
+          # and the server actually boots and completes its DB migrations
+          # against a scratch working dir -- which is the real "did the
+          # rebase produce something broken" signal this step is for.
+          uv run python -c "import phoenix.server.app; import phoenix.db.models; print('imports OK')"
+
+          export PHOENIX_WORKING_DIR="$(mktemp -d)"
+          uv run phoenix serve > server.log 2>&1 &
+          server_pid=$!
+
+          ok=false
+          for _ in $(seq 1 30); do
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              echo "Server process exited early:"
+              cat server.log
+              exit 1
+            fi
+            if grep -q "Phoenix is up and running" server.log; then
+              ok=true
+              break
+            fi
+            sleep 2
+          done
+
+          kill "$server_pid" 2>/dev/null || true
+          wait "$server_pid" 2>/dev/null || true
+
+          if [ "$ok" != "true" ]; then
+            echo "Server did not report ready within the timeout:"
+            cat server.log
+            exit 1
+          fi
+          echo "Server booted and ran migrations successfully."
+
+      - name: Open or update regression issue
+        if: failure() && steps.rebase.outputs.conflict == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.REBASE_BOT_TOKEN }}
+        run: |
+          title="Nightly rebase regression on ${PATCH_BRANCH}"
+          body="The nightly rebase of \`${PATCH_BRANCH}\` onto \`upstream/main\` succeeded with **no conflicts**, but the post-rebase smoke check failed. This is a real regression, not a merge conflict -- \`${PATCH_BRANCH}\` was already force-pushed with the rebased (but failing) state.
+
+          Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          # gh issue create/comment go through GraphQL (createIssue/addComment),
+          # which fine-grained PATs currently can't use even with correct repo
+          # permissions -- fails with "Resource not accessible by personal
+          # access token". gh api hits the REST endpoints instead, which work.
+          existing="$(gh issue list --search "in:title \"$title\"" --state open --json number --jq '.[0].number')"
+          if [ -n "$existing" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/issues/${existing}/comments" -f body="$body"
+          else
+            gh api "repos/${GITHUB_REPOSITORY}/issues" -f title="$title" -f body="$body"
+          fi
+
+      - name: Push conflict branch for manual resolution
+        if: steps.rebase.outputs.conflict == 'true'
+        run: git push origin "HEAD:refs/heads/${CONFLICT_BRANCH}" --force
+
+      - name: Open or update conflict issue
+        if: steps.rebase.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.REBASE_BOT_TOKEN }}
+        run: |
+          # Not a PR: after `git rebase --abort`, HEAD is identical to
+          # ${PATCH_BRANCH}'s original tip, so CONFLICT_BRANCH always has
+          # zero commits ahead of PATCH_BRANCH. GitHub's PR API rejects
+          # head/base pairs with no commit diff ("No commits between ...")
+          # -- a PR here can never succeed, by construction. An issue
+          # doesn't need a diff to exist, so use that instead.
+          title="Nightly rebase conflict: $(date -u +%F)"
+          body="Automated rebase of \`${PATCH_BRANCH}\` onto \`upstream/main\` hit a conflict on $(date -u +%F).
+
+          To resolve:
+          1. \`git fetch origin && git checkout ${CONFLICT_BRANCH}\`
+          2. \`git remote add upstream ${UPSTREAM_REPO} 2>/dev/null; git fetch upstream main\`
+          3. \`git rebase upstream/main\`, resolve conflicts, \`git rebase --continue\`
+          4. \`git push origin HEAD:${PATCH_BRANCH} --force-with-lease\`
+          5. Close this issue -- the next nightly run recreates \`${CONFLICT_BRANCH}\` and reopens/re-comments if it's still needed."
+          existing="$(gh issue list --search "in:title \"$title\"" --state open --json number --jq '.[0].number')"
+          if [ -n "$existing" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/issues/${existing}/comments" -f body="$body"
+          else
+            gh api "repos/${GITHUB_REPOSITORY}/issues" -f title="$title" -f body="$body"
+          fi
+
+      - name: Fail run on conflict (visible in the Actions tab)
+        if: steps.rebase.outputs.conflict == 'true'
+        run: |
+          echo "::error::Rebase conflict -- see the opened/updated issue for resolution steps."
+          exit 1
