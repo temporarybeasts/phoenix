@@ -61,9 +61,9 @@ from phoenix.db.engines import (
 from phoenix.db.facilitator import Facilitator
 from phoenix.db.insertion.helpers import DataManipulation
 from phoenix.server import app as server_app
+from phoenix.server.access import resolution as _access_resolution
 from phoenix.server.agents.capabilities import MintlifyDocsMCPServer
 from phoenix.server.api.schema import build_graphql_schema
-from phoenix.server.access import resolution as _access_resolution
 from phoenix.server.app import _db, create_app
 from phoenix.server.dml_event_handler import DmlEventHandler
 from phoenix.server.encryption import EncryptionService

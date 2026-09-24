@@ -24,6 +24,7 @@ from phoenix.server.api.queries import Query
 from phoenix.server.api.types.AnnotationSource import AnnotationSource
 from phoenix.server.api.types.node import from_global_id_with_expected_type
 from phoenix.server.api.types.TraceAnnotation import TraceAnnotation
+from phoenix.server.bearer_auth import PhoenixUser
 from phoenix.server.dml_event import TraceAnnotationDeleteEvent, TraceAnnotationInsertEvent
 
 CREATE_TRACE_NOTES_ERROR = (
