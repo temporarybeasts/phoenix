@@ -63,7 +63,7 @@ from phoenix.server.types import (
     RefreshTokenClaims,
     UserId,
 )
-from tests.unit.conftest import TestBulkInserter, patch_batched_caller, patch_grpc_server
+from tests.unit.conftest import TestBulkInserter, patch_dml_event_handler, patch_grpc_server
 from tests.unit.graphql import AsyncGraphQLClient
 from tests.unit.server.access.conftest import migrated_postgresql_engine  # noqa: F401
 
@@ -86,7 +86,7 @@ def db(migrated_postgresql_engine: AsyncEngine) -> DbSessionFactory:  # noqa: F8
 @pytest.fixture
 async def app(db: DbSessionFactory) -> AsyncIterator[FastAPI]:
     async with contextlib.AsyncExitStack() as stack:
-        await stack.enter_async_context(patch_batched_caller())
+        await stack.enter_async_context(patch_dml_event_handler())
         await stack.enter_async_context(patch_grpc_server())
         yield create_app(
             db=db,

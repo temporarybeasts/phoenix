@@ -32,7 +32,7 @@ from phoenix.auth import (
 from phoenix.db import models
 from phoenix.server.app import create_app
 from phoenix.server.types import DbSessionFactory
-from tests.unit.conftest import TestBulkInserter, patch_batched_caller, patch_grpc_server
+from tests.unit.conftest import TestBulkInserter, patch_dml_event_handler, patch_grpc_server
 
 _SECRET = SecretStr("test-secret-at-least-32-chars-long!!")
 _PASSWORD = "a-perfectly-fine-password-123"
@@ -41,7 +41,7 @@ _PASSWORD = "a-perfectly-fine-password-123"
 @pytest.fixture
 async def app(db: DbSessionFactory) -> AsyncIterator[FastAPI]:
     async with contextlib.AsyncExitStack() as stack:
-        await stack.enter_async_context(patch_batched_caller())
+        await stack.enter_async_context(patch_dml_event_handler())
         await stack.enter_async_context(patch_grpc_server())
         yield create_app(
             db=db,

@@ -58,7 +58,7 @@ from phoenix.server.types import (
     RefreshTokenClaims,
     UserId,
 )
-from tests.unit.conftest import TestBulkInserter, patch_batched_caller, patch_grpc_server
+from tests.unit.conftest import TestBulkInserter, patch_dml_event_handler, patch_grpc_server
 
 pytestmark = pytest.mark.postgres_only
 
@@ -109,7 +109,7 @@ def db(migrated_postgresql_engine: AsyncEngine) -> DbSessionFactory:
 @pytest.fixture
 async def app(db: DbSessionFactory) -> AsyncIterator[FastAPI]:
     async with contextlib.AsyncExitStack() as stack:
-        await stack.enter_async_context(patch_batched_caller())
+        await stack.enter_async_context(patch_dml_event_handler())
         await stack.enter_async_context(patch_grpc_server())
         yield create_app(
             db=db,
