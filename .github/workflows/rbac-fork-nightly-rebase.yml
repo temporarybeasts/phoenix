@@ -81,7 +81,7 @@ jobs:
           # `main` (as happened going from 0.12.1 to 0.12.5) -- re-sync this
           # pin with pyproject.toml's required-version whenever the smoke
           # check fails with "Required uv version ... does not match".
-          version: "0.12.5"
+          version: "0.12.17"
 
       - name: Post-rebase smoke check
         if: steps.rebase.outputs.conflict == 'false'
@@ -164,7 +164,7 @@ jobs:
           # head/base pairs with no commit diff ("No commits between ...")
           # -- a PR here can never succeed, by construction. An issue
           # doesn't need a diff to exist, so use that instead.
-          title="Nightly rebase conflict: $(date -u +%F)"
+          title="Nightly rebase conflict on ${PATCH_BRANCH}"
           body="Automated rebase of \`${PATCH_BRANCH}\` onto \`upstream/main\` hit a conflict on $(date -u +%F).
 
           To resolve:
