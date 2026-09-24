@@ -167,12 +167,14 @@ jobs:
           title="Nightly rebase conflict on ${PATCH_BRANCH}"
           body="Automated rebase of \`${PATCH_BRANCH}\` onto \`upstream/main\` hit a conflict on $(date -u +%F).
 
-          To resolve:
-          1. \`git fetch origin && git checkout ${CONFLICT_BRANCH}\`
-          2. \`git remote add upstream ${UPSTREAM_REPO} 2>/dev/null; git fetch upstream main\`
-          3. \`git rebase upstream/main\`, resolve conflicts, \`git rebase --continue\`
-          4. \`git push origin HEAD:${PATCH_BRANCH} --force-with-lease\`
-          5. Close this issue -- the next nightly run recreates \`${CONFLICT_BRANCH}\` and reopens/re-comments if it's still needed."
+          To resolve with Claude Code, run the \`rbac-fork-rebase-conflict\` skill (\`.claude/skills/rbac-fork-rebase-conflict/SKILL.md\`).
+
+          To resolve by hand, rebase the **current** \`${PATCH_BRANCH}\` tip, not \`${CONFLICT_BRANCH}\` -- that branch is a snapshot from the failed run, and force-pushing a rebase of it drops anything pushed to \`${PATCH_BRANCH}\` since:
+          1. \`git remote add upstream ${UPSTREAM_REPO} 2>/dev/null; git fetch origin ${PATCH_BRANCH} && git fetch upstream main\`
+          2. \`BASE=\$(git rev-parse origin/${PATCH_BRANCH}) && git switch --detach \$BASE\`
+          3. \`git rebase upstream/main\`, resolve conflicts, \`git rebase --continue\`; run the fork's tests (clean merges can still break, e.g. imports upstream removed)
+          4. \`git push origin HEAD:${PATCH_BRANCH} --force-with-lease=${PATCH_BRANCH}:\$BASE\`
+          5. Close this issue -- the next nightly run reopens/re-comments if it's still needed."
           existing="$(gh issue list --search "in:title \"$title\"" --state open --json number --jq '.[0].number')"
           if [ -n "$existing" ]; then
             gh api "repos/${GITHUB_REPOSITORY}/issues/${existing}/comments" -f body="$body"
