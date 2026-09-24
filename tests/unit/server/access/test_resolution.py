@@ -164,11 +164,14 @@ async def test_no_mapping_rows_at_all_means_full_access(db: DbSessionFactory) ->
     and reject every write, including project creation -- caught via
     `tests/integration/auth/test_oauth2.py::TestGrantTokenAccess::test_grant_token_can_write_rest_resources`
     failing against real RLS."""
-    # This test's `db` fixture is a bare session factory that doesn't run
-    # the app-startup Facilitator step that normally seeds the well-known
-    # default project group -- seed it explicitly under its real name so
-    # `get_default_project_group_id` (exercised below) can find it.
-    default_group_id = await _create_project_group(db, DEFAULT_PROJECT_GROUP_NAME)
+    # The `db` fixture's template database is seeded by the app-startup
+    # Facilitator, which already creates the well-known default project
+    # group -- look it up rather than inserting a duplicate.
+    async with db() as session:
+        default_group_id = await session.scalar(
+            select(models.ProjectGroup.id).filter_by(name=DEFAULT_PROJECT_GROUP_NAME)
+        )
+    assert default_group_id is not None
     user_id = await _create_user(db)
     # Not the default group -- this user isn't a member of anything, on
     # purpose, to prove access is independent of membership once RBAC is
