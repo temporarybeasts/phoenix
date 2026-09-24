@@ -3,8 +3,8 @@ name: rbac-fork-rebase-conflict
 description: >
   Resolve a failed nightly rebase of the `rbac-fork` branch onto Arize-ai/phoenix `main`.
   Use this skill when the `RBAC fork nightly rebase` workflow
-  (.github/workflows/rbac-fork-nightly-rebase.yml) has opened a "Nightly rebase conflict: <date>"
-  issue, when the user mentions the `rbac-fork-conflict` branch, or asks to "fix the nightly
+  (.github/workflows/rbac-fork-nightly-rebase.yml) has opened a "Nightly rebase conflict on
+  rbac-fork" issue (or an older dated "Nightly rebase conflict: <date>" one), when the user mentions the `rbac-fork-conflict` branch, or asks to "fix the nightly
   rebase", "resolve the rebase conflict", or "rebase rbac-fork onto upstream". Rebases in an
   isolated worktree, resolves conflicts, runs the workflow's smoke check, force-pushes
   `rbac-fork` with a pinned lease after confirmation, and closes the issue.
