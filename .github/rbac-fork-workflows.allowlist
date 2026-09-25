@@ -1,0 +1,29 @@
+# Workflows that stay enabled on the temporarybeasts/phoenix fork.
+#
+# The fork inherits every workflow in Arize-ai/phoenix, and most of them need
+# Arize-only infrastructure (Slack webhooks, GitHub App tokens, Anthropic /
+# OpenAI keys, the `oss-4-core-runner` runner, a `main` branch this fork
+# doesn't have). Rather than editing those upstream files -- which would
+# conflict on every nightly rebase -- .github/workflows/rbac-fork-workflow-guard.yml
+# disables (via the Actions API, i.e. repo state, not file content) every
+# workflow whose path is NOT listed here. New upstream workflows are picked up
+# automatically after the next nightly rebase.
+#
+# To re-enable a workflow: add its path here AND run
+#   gh workflow enable <file> -R temporarybeasts/phoenix
+# (the guard only disables; it never re-enables).
+#
+# One path per line; `#` starts a comment.
+
+# Fork-owned
+.github/workflows/rbac-fork-nightly-rebase.yml
+.github/workflows/rbac-fork-workflow-guard.yml
+
+# Upstream PR checks that run without Arize secrets
+.github/workflows/python-CI.yml
+.github/workflows/typescript-CI.yml
+.github/workflows/zizmor.yml
+.github/workflows/openapi-schema.yaml
+.github/workflows/pull-requests.yaml
+.github/workflows/phoenix-sqlean-ci.yml
+.github/workflows/helm-ci.yml
