@@ -13,6 +13,11 @@ name: RBAC fork nightly rebase
 # it silently drifted (85 commits behind by the time this was caught) with
 # no functional purpose. Diff against upstream directly via the `upstream`
 # remote this workflow already fetches, e.g. `git diff upstream/main`.
+#
+# Inherited upstream workflows: rbac-fork-workflow-guard.yml runs after
+# this one and disables every workflow not listed in
+# .github/rbac-fork-workflows.allowlist, so upstream's Arize-only jobs
+# (Slack, PXI evals, Claude bots, publishing...) don't run on the fork.
 
 on:
   schedule:

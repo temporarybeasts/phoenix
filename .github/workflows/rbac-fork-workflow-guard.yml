@@ -1,0 +1,78 @@
+name: RBAC fork workflow guard
+
+# Disables every inherited upstream workflow not listed in
+# .github/rbac-fork-workflows.allowlist (see that file for why). Runs after
+# each nightly rebase, since that's when new upstream workflows land, and
+# on demand. Disabling is repository state, not file content, so it never
+# conflicts with upstream changes to the workflow files themselves.
+
+on:
+  # zizmor: ignore[dangerous-triggers] Only reads the allowlist from the
+  # default branch and calls the Actions API; never checks out or runs code
+  # from the triggering run.
+  workflow_run:
+    workflows: ["RBAC fork nightly rebase"]
+    types: [completed]
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  guard:
+    # No-op anywhere but this fork, in case the file ever travels upstream.
+    if: github.repository == 'temporarybeasts/phoenix'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Checkout allowlist
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: .github
+          sparse-checkout-cone-mode: false
+
+      - name: Disable non-allowlisted workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ALLOWLIST: .github/rbac-fork-workflows.allowlist
+        run: |
+          set -euo pipefail
+          allowed="$(sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$ALLOWLIST" | grep -v '^$' || true)"
+          if [ -z "$allowed" ]; then
+            echo "::error::Allowlist $ALLOWLIST is empty -- refusing to disable everything."
+            exit 1
+          fi
+
+          disabled=()
+          warned=()
+          while IFS=$'\t' read -r id state path; do
+            # Skip GitHub-managed dynamic workflows (e.g. dependabot/update-graph).
+            case "$path" in .github/workflows/*) ;; *) continue ;; esac
+            if grep -qxF "$path" <<<"$allowed"; then
+              if [ "$state" != "active" ]; then
+                warned+=("$path ($state)")
+              fi
+            elif [ "$state" = "active" ]; then
+              gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${id}/disable" >/dev/null
+              disabled+=("$path")
+            fi
+          done < <(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows" --paginate \
+                     --jq '.workflows[] | [.id, .state, .path] | @tsv')
+
+          {
+            echo "## RBAC fork workflow guard"
+            echo
+            echo "Disabled this run: ${#disabled[@]}"
+            for p in "${disabled[@]}"; do echo "- \`$p\`"; done
+            if [ "${#warned[@]}" -gt 0 ]; then
+              echo
+              echo "Allowlisted but not active (left as-is):"
+              for p in "${warned[@]}"; do echo "- \`$p\`"; done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          for p in "${warned[@]}"; do
+            echo "::warning::Allowlisted workflow is not active: $p"
+          done
